@@ -7,7 +7,8 @@ from ventsim_mcp import server, vsm
 
 COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node", "Exit Node",
         "Notes", "Group", "X1", "Y1", "Z1", "X2", "Y2", "Z2", "Width", "Height", "Area",
-        "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage"]
+        "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage",
+        "Resistance Total", "Pressure From", "Pressure To"]
 
 
 def _row(i, name, p1, p2, q, fan="0"):
@@ -72,3 +73,21 @@ def test_velocity_and_fans_and_compare(model_path, tmp_path):
     other = str(tmp_path / "b.vsm")
     server.edit_airways(model_path, other, [{"unique_no": "2", "field": "Notes", "value": "x"}])
     assert server.compare_models(model_path, other)["changed"] == 0
+
+
+def test_solver_series_what_if(tmp_path):
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    specs = [(0, 1, "1000", "0"), (1, 2, "0", "0")]  # node 0 held at 1000 Pa, node 2 at 0
+    for i, (a, b, pf, pt) in enumerate(specs, start=1):
+        d = dict.fromkeys(COLS, "")
+        d.update({"MAIN": str(i), "Unique No": str(i), "X1": str(a), "Y1": "0", "Z1": "0",
+                  "X2": str(b), "Y2": "0", "Z2": "0", "Quantity": "70.7",
+                  "Resistance Total": "0.1", "Pressure From": pf, "Pressure To": pt,
+                  "Fan Type": "0", "Fan Numbers": "1"})
+        lines.append("\t".join(d[c] for c in COLS))
+    p = tmp_path / "s.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
+    r = server.what_if(str(p), resistance_scale={"2": 2.0})
+    assert r["baseline_fit"]["mean_rel_error"] < 0.01
+    # series R 0.2 -> sqrt(1000/0.2)=70.7; after scaling R = 0.3 -> 57.7
+    assert abs(r["largest_changes"][0]["delta"] + 13.0) < 0.1
