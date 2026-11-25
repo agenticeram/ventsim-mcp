@@ -174,7 +174,12 @@ def airway(model: Model, row: list[str]) -> dict:
 
 
 def airways(model: Model) -> list[dict]:
-    return [airway(model, r) for r in model.rows()]
+    out = []
+    for r, active in zip(model.rows(), active_mask(model)):
+        d = airway(model, r)
+        d["In Simulated Stage"] = active
+        out.append(d)
+    return out
 
 
 def fans(model: Model) -> list[dict]:
@@ -201,6 +206,8 @@ def summary(model: Model) -> dict:
             round(max(max(w["Z1"] or 0, w["Z2"] or 0) for w in ws), 1),
         ] if ws else None,
         "has_simulation_results": any((w["Quantity"] or 0) for w in ws),
+        "simulated_stage": stage_name(model, active_stage(model)) or None,
+        "airways_in_simulated_stage": sum(active_mask(model)),
         "units": "SI (m, m3/s, Pa, kW) as stored in file",
     }
 
@@ -234,3 +241,70 @@ def node_ids(model: Model, tolerance: float = 0.05) -> list[tuple[int, int]]:
     roots: dict[int, int] = {}
     ids = [roots.setdefault(find(k), len(roots)) for k in range(len(pts))]
     return [(ids[2 * n], ids[2 * n + 1]) for n in range(len(pts) // 2)]
+
+
+def _stage_bits(model: Model) -> list[int]:
+    out = []
+    for r in model.rows():
+        try:
+            out.append(int(float(model.value(r, "Stage") or 1)))
+        except ValueError:
+            out.append(1)
+    return out
+
+
+def active_stage(model: Model) -> int | None:
+    """Index of the stage whose results are saved, or None for a single-stage model.
+
+    'Stage' is a bit mask: an airway exists in stage k when bit k is set, and an airway
+    that changes between stages is stored once per version, on top of each other. The file
+    does not mark the stage that was simulated last, so pick the stage whose airways give a
+    mass balance of the saved airflow (ties: the stage with more airways)."""
+    cached = model.__dict__.get("_active_stage", "unset")
+    if cached != "unset":
+        return cached
+    bits = _stage_bits(model)
+    present = sorted({k for b in bits for k in range(31) if b >> k & 1})
+    result = None
+    if len(present) > 1 and len(set(bits)) > 1:
+        rows = list(model.rows())
+        ends = node_ids(model)
+        best = None
+        for k in present:
+            net: dict[int, float] = {}
+            deg: dict[int, int] = {}
+            count = 0
+            for r, (a, b), m in zip(rows, ends, bits):
+                if not m >> k & 1:
+                    continue
+                count += 1
+                q = model.num(r, "Dry Massflow") or model.num(r, "Quantity")
+                if model.num(r, "Quantity") < 0:
+                    q = -abs(q)
+                net[a] = net.get(a, 0.0) - q
+                net[b] = net.get(b, 0.0) + q
+                deg[a] = deg.get(a, 0) + 1
+                deg[b] = deg.get(b, 0) + 1
+            bad = sum(abs(v) for n, v in net.items() if deg[n] > 1)
+            score = (round(bad, 3), -count)
+            if best is None or score < best[0]:
+                best = (score, k)
+        result = best[1]
+    model.__dict__["_active_stage"] = result
+    return result
+
+
+def active_mask(model: Model) -> list[bool]:
+    """True for airways that belong to the simulated stage."""
+    k = active_stage(model)
+    bits = _stage_bits(model)
+    return [True] * len(bits) if k is None else [bool(b >> k & 1) for b in bits]
+
+
+def stage_name(model: Model, k: int | None) -> str:
+    if k is None:
+        return ""
+    for r in model.section("STAGES"):
+        if r and r[0] == str(k) and len(r) > 1:
+            return r[1]
+    return str(k)

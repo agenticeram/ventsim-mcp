@@ -10,7 +10,8 @@ for f in sorted(glob.glob(os.path.join(folder, "*.vsm"))):
         continue
     t = time.time()
     s = solver.solve(m)
-    q0 = np.array([m.num(r, "Quantity") for r in m.rows()])
+    saved = {m.value(r, "Unique No"): m.num(r, "Quantity") for r in m.rows()}
+    q0 = np.array([saved[u] for u in s["uid"]])
     err = np.abs(abs(s["Q"]) - abs(q0))
     big = q0 != 0
     rel = float(err.sum() / np.abs(q0).sum()) if big.any() else 0.0

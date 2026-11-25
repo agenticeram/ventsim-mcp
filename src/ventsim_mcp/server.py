@@ -82,7 +82,8 @@ def check_flow_balance(path: str, tolerance: float = 0.5, limit: int = 30) -> di
     """Mass-balance check of simulated airflow at every junction (mass flow expressed as
     m3/s of standard 1.2 kg/m3 air when the file has it, else volume flow).
 
-    Junctions are found by matching airway end coordinates. Nodes touched by a single
+    Only airways of the simulated stage are used. Junctions are found by matching airway
+    end coordinates. Nodes touched by a single
     airway (portals, dead ends) are skipped. A large imbalance usually means the model
     needs to be re-simulated, contains recirculation fans, or has disconnected nodes."""
     m = _load(path)
@@ -91,7 +92,9 @@ def check_flow_balance(path: str, tolerance: float = 0.5, limit: int = 30) -> di
     where: dict[int, tuple] = {}
     # balance mass flow where Ventsim saved it (heated air expands), else volume
     use_mass = any(m.num(r, "Dry Massflow") for r in m.rows())
-    for r, (a, b) in zip(m.rows(), vsm.node_ids(m)):
+    for r, (a, b), active in zip(m.rows(), vsm.node_ids(m), vsm.active_mask(m)):
+        if not active:
+            continue
         q = m.num(r, "Quantity")
         if use_mass:
             q = m.num(r, "Dry Massflow") / 1.2 * (1 if q >= 0 else -1)
@@ -186,8 +189,9 @@ def what_if(path: str, resistance_scale: dict[str, float] | None = None,
     m = _load(path)
     base = solver.solve(m)
     mod = solver.solve(m, resistance_scale or {}, set(fans_off or []))
-    stored = [m.num(r, "Quantity") for r in m.rows()]
-    names = [m.value(r, "Branch Name") for r in m.rows()]
+    act = [r for r, k in zip(m.rows(), vsm.active_mask(m)) if k]
+    stored = [m.num(r, "Quantity") for r in act]
+    names = [m.value(r, "Branch Name") for r in act]
     total = sum(abs(s) for s in stored)
     rel = [sum(abs(abs(b) - abs(s)) for b, s in zip(base["Q"], stored)) / total] if total else []
     out = []

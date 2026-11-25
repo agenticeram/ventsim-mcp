@@ -137,8 +137,10 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
     resistance_scale = resistance_scale or {}
     fans_off = fans_off or set()
     curves = _curve(model)
-    rows = list(model.rows())
-    ends = vsm.node_ids(model)
+    # only the airways of the simulated stage form the network
+    mask = vsm.active_mask(model)
+    rows = [r for r, k in zip(model.rows(), mask) if k]
+    ends = [e for e, k in zip(vsm.node_ids(model), mask) if k]
     nodes: dict[int, int] = defaultdict(int)
     br = []
     dens: list[float] = []
