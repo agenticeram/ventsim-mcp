@@ -143,3 +143,18 @@ def test_close_points_are_one_node(tmp_path):
     p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
     ends = vsm.node_ids(vsm.parse(str(p)))
     assert ends[0][1] == ends[1][0]
+
+
+def test_fan_duty_check(tmp_path):
+    rows = [_row(i, f"F{i}", (str(i * 10), "0", "0"), (str(i * 10 + 5), "0", "0"), q, fan="1")
+            for i, q in ((1, "15"), (2, "21"), (3, "30"), (4, "45"))]
+    curve = ["0\t800\t0\t10", "1\t1000\t0\t20", "2\t900\t0\t30", "3\t500\t0\t40"]
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS), *rows,
+             "FANS", "1\tHump Fan\t2.8\t0\t0\t0\t0\t1.2", *curve, "END\tFANS", "ENDFILE"]
+    p = tmp_path / "f.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines).encode("latin-1")))
+    r = server.fan_duty_check(str(p))
+    status = {f["Unique No"]: f["status"] for f in r["items"]}
+    assert status == {"1": "stall_region", "2": "near_stall", "3": "ok", "4": "beyond_curve"}
+    assert r["items"][0]["stall_peak_flow_m3s"] == 20.0
+    assert server.fan_duty_check(str(p), only_problems=True)["fans"] == 3

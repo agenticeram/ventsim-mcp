@@ -24,6 +24,7 @@ the file.
 | `get_airway` | Every column of one airway |
 | `list_fans` | Fan airways with fan model name, duty airflow, fan pressure, power |
 | `velocity_check` | Airways above a maximum (or below a minimum) air velocity |
+| `fan_duty_check` | Where each fan runs on its curve: airflow per fan, stall margin, flags fans in or near the stall region or off the curve |
 | `fan_summary` | Fans by model with total `Fan Power` as stored in the file (kW) |
 | `compare_models` | Diff two saved versions: added/removed airways, airflow and pressure changes |
 | `check_flow_balance` | Airflow mass balance at every junction (finds un-simulated or broken networks) |
