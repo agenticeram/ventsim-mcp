@@ -31,8 +31,12 @@ the file.
 | `what_if` | Experimental: re-solve the network after scaling airway resistance, switching fans off or changing fan speed, report airflow changes |
 | `size_regulator` | Experimental: resistance, pressure drop and approximate opening area of a regulator that brings one airway to a target airflow |
 | `trace_airflow` | Main airflow path through an airway from intake to exhaust, with length and frictional pressure along it |
+| `simulate_airflow` | Experimental: solve the airflow from the model inputs alone (no saved results needed), with optional changes |
+| `render_network` | Draw the network to SVG (plan or section), coloured by any field, fans marked, paths highlighted |
 | `export_csv` | Airways to CSV, any columns |
-| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name |
+| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off |
+
+`list_airways` takes `units="imperial"` (cfm, fpm, ft, in. w.g., hp).
 
 All values are in the SI units Ventsim stores internally (m, m3/s, Pa, kW).
 
@@ -98,9 +102,30 @@ pair among the shipped examples, so treat it as one data point.
 Heat, density and fire effects are not re-evaluated after a change. Treat results as an
 estimate and confirm in Ventsim.
 
+## Simulation from inputs (experimental)
+
+`simulate_airflow` does not use any saved result: resistance (`Resistance Total`), fan
+curves at their speed and count, fixed-flow airways, fixed-pressure airways (only when
+Ventsim's flag for it is set), closed airways, ends open to surface and dead ends (read from
+Ventsim's branch flags). Air is taken as incompressible and natural ventilation is ignored,
+unless `use_saved_heat=True` borrows both from the saved results. Compared with the airflow
+Ventsim saved (`python bench/simulate.py <folder>`):
+
+| Ventsim DESIGN 6 examples | Error, cold | With saved heat |
+|---|---|---|
+| CoalMine2, Heat Strategies, Tutorial1, RealMine, DemoMine | 0.0 - 0.2 % | same |
+| Tutorial2, DevSolids, RealMine 2 | 0.2 - 1.2 % | same |
+| CoalMine, diamondmine, without_ducting, Natural Ventilation Effects | 2 - 4 % | 1.3 - 3.5 % |
+| Fire, Fire2, InclinedHeatMine (heat-driven) | 6 - 28 % | 0.6 - 2 % |
+| Blue_sky | 8.5 % | 5.4 % |
+| HVACDemo, A, B (building ducts with room outlets) | not supported | |
+
+The remaining differences come from what the file does not spell out: heat and natural
+ventilation, how Ventsim applies total-pressure fan curves, leakage on ducts.
+
 ## Limits
 
-- Read-only on results: simulation, heat and fire modelling stay in Ventsim.
+- Heat, fire, gas and contaminant modelling stay in Ventsim; the airflow simulation here is a network solve only.
 - Editing is limited to text fields; geometry edits would leave results stale.
 - Tested on the 20 example models shipped with Ventsim DESIGN 6 (up to 6,700 airways). Other versions untested.
 

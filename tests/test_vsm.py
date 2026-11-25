@@ -8,7 +8,7 @@ from ventsim_mcp import server, vsm
 COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node", "Exit Node",
         "Notes", "Group", "X1", "Y1", "Z1", "X2", "Y2", "Z2", "Width", "Height", "Area",
         "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage",
-        "Resistance Total", "Pressure From", "Pressure To", "QuantityFix"]
+        "Resistance Total", "Pressure From", "Pressure To", "QuantityFix", "Fan Speed", "Fan Off"]
 
 
 def _row(i, name, p1, p2, q, fan="0"):
@@ -200,3 +200,31 @@ def test_trace_airflow(tmp_path):
     r = server.trace_airflow(p, "2")
     assert [w["Unique No"] for w in r["path"]] == ["1", "2"]
     assert r["fans_on_path"] == ["1"] and r["total_length_m"] == 200.0
+
+
+def test_simulate_airflow_without_saved_results(tmp_path):
+    p = _fan_loop(tmp_path)
+    r = server.simulate_airflow(p)
+    # nothing but resistance and the fan curve: 0.2 Q^2 = 1000 - 10 Q  ->  Q = 50
+    assert r["converged"] and abs(r["items"][0]["airflow"] - 50.0) < 0.05
+    assert r["vs_saved"]["error"] < 1e-3
+    assert abs(server.simulate_airflow(p, fan_speed={"1": 50})["items"][0]["airflow"] - 25.0) < 0.05
+
+
+def test_render_units_and_fan_edits(tmp_path):
+    p = _fan_loop(tmp_path)
+    out = str(tmp_path / "n.svg")
+    assert "2 airways" in server.render_network(p, out, highlight=["1"])
+    assert open(out, encoding="utf-8").read().startswith("<svg")
+    with pytest.raises(ValueError):
+        server.render_network(p, out)  # never overwrites
+    w = server.list_airways(p, units="imperial")[0]
+    assert abs(w["Quantity"] - 50 * 2118.88) < 1 and "Velocity fpm" in w
+    e = str(tmp_path / "e.vsm")
+    server.edit_airways(p, e, [{"unique_no": "1", "field": "Fan Speed", "value": "80"},
+                               {"unique_no": "1", "field": "Fan Off", "value": "true"}])
+    a = server.get_airway(e, "1")
+    assert a["Fan Speed"] == "80" and a["Fan Off"] == "True"
+    with pytest.raises(ValueError):
+        server.edit_airways(p, str(tmp_path / "f.vsm"),
+                            [{"unique_no": "2", "field": "Fan Speed", "value": "80"}])

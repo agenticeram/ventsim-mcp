@@ -8,11 +8,39 @@ from collections import defaultdict
 
 from mcp.server.fastmcp import FastMCP
 
-from . import solver, vsm
+from . import render, solver, vsm
 
 mcp = FastMCP("ventsim")
 
 _cache: dict[str, tuple[float, vsm.Model]] = {}
+
+# SI value * factor = imperial value (US mining practice)
+_FT, _INWG = 3.28084, 0.00401463
+IMPERIAL = {
+    "Quantity": (2118.88, "cfm"), "Velocity m/s": (196.85, "fpm"),
+    **{c + s: (_FT, "ft") for c in "XYZ" for s in "12"},
+    "Width": (_FT, "ft"), "Height": (_FT, "ft"), "Length": (_FT, "ft"),
+    "Perimeter": (_FT, "ft"), "Area": (10.7639, "ft2"),
+    "Pressure Branch": (_INWG, "in. w.g."), "Pressure Fan": (_INWG, "in. w.g."),
+    "Static Pressure": (_INWG, "in. w.g."), "Fan Power": (1.34102, "hp"),
+    "Resistance Total": (_INWG / 2118.88 ** 2 * 1e10, "in. w.g. per (100 kcfm)^2"),
+}
+
+
+def _to_units(w: dict, units: str) -> dict:
+    u = (units or "SI").lower()
+    if u in ("si", "metric"):
+        return w
+    if u != "imperial":
+        raise ValueError("units must be 'SI' or 'imperial'")
+    out = dict(w)
+    for k, (f, _u) in IMPERIAL.items():
+        if isinstance(out.get(k), (int, float)) and not isinstance(out.get(k), bool):
+            out[k] = round(out[k] * f, 4)
+    if "Velocity m/s" in out:
+        out["Velocity fpm"] = out.pop("Velocity m/s")
+    out["units"] = "imperial: Quantity cfm, Velocity fpm, lengths ft, Area ft2, pressures in. w.g., Fan Power hp"
+    return out
 
 
 def _load(path: str) -> vsm.Model:
@@ -40,9 +68,11 @@ def list_airways(
     sort_by: str = "Unique No",
     descending: bool = False,
     limit: int = 50,
+    units: str = "SI",
 ) -> list[dict]:
     """List airways. Filter by name/notes text or minimum velocity (m/s); sort by any
-    returned field (e.g. 'Quantity', 'Length', 'Velocity m/s', 'Pressure Branch')."""
+    returned field (e.g. 'Quantity', 'Length', 'Velocity m/s', 'Pressure Branch').
+    units='imperial' returns cfm, fpm, ft, ft2, in. w.g. and hp (filters stay in SI)."""
     ws = vsm.airways(_load(path))
     if name_contains:
         s = name_contains.lower()
@@ -58,7 +88,7 @@ def list_airways(
 
     if sort_by != "Unique No" or descending:
         ws.sort(key=key, reverse=descending)
-    return ws[: max(1, min(limit, 500))]
+    return [_to_units(w, units) for w in ws[: max(1, min(limit, 500))]]
 
 
 @mcp.tool()
@@ -341,6 +371,60 @@ def trace_airflow(path: str, unique_no: str, max_steps: int = 200) -> dict:
 
 
 @mcp.tool()
+def simulate_airflow(path: str, resistance_scale: dict[str, float] | None = None,
+                     fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
+                     use_saved_heat: bool = False, limit: int = 30) -> dict:
+    """EXPERIMENTAL. Solve the airflow from the model inputs alone, without the results
+    Ventsim saved: airway resistance, fan curves, fan speed and count, fixed-flow and
+    fixed-pressure airways, closed airways, surface connections and dead ends. Works on a
+    model that was never simulated. Optional changes as in what_if. Natural ventilation and
+    heat are not modelled; use_saved_heat=True takes them from the saved results instead.
+    If the file has saved airflow, 'vs_saved' compares the two (error = total absolute
+    airflow difference / total airflow)."""
+    m = _load(path)
+    s = solver.simulate(m, resistance_scale={str(k): float(v) for k, v in (resistance_scale or {}).items()},
+                        fans_off={str(u) for u in (fans_off or [])},
+                        fan_speed={str(k): float(v) for k, v in (fan_speed or {}).items()},
+                        nvp_from_file=use_saved_heat, density_from_file=use_saved_heat)
+    rows = {m.value(r, "Unique No"): r for r in m.rows()}
+    items = []
+    for u, q in zip(s["uid"], s["Q"]):
+        r = rows[u]
+        items.append({"Unique No": u, "Branch Name": m.value(r, "Branch Name"),
+                      "airflow": round(float(q), 3), "saved_airflow": round(m.num(r, "Quantity"), 3)})
+    out = {"airways": len(items), "converged": s["residual"] < 0.05, "residual_m3s": round(s["residual"], 4),
+           "open_ends": s["open_ends"], "dead_ends": s["dead_ends"]}
+    tot = sum(abs(i["saved_airflow"]) for i in items)
+    if tot:
+        diff = [abs(abs(i["airflow"]) - abs(i["saved_airflow"])) for i in items]
+        out["vs_saved"] = {"error": round(sum(diff) / tot, 4), "max_abs_diff_m3s": round(max(diff), 3)}
+        items.sort(key=lambda i: -abs(abs(i["airflow"]) - abs(i["saved_airflow"])))
+    else:
+        items.sort(key=lambda i: -abs(i["airflow"]))
+    out["items"] = items[:limit]
+    return out
+
+
+@mcp.tool()
+def render_network(path: str, out_path: str, view: str = "plan", color_by: str = "Velocity m/s",
+                   highlight: list[str] | None = None, width_px: int = 1600) -> str:
+    """Draw the airways of the simulated stage to an SVG file (opens in any browser).
+    view: 'plan' (X-Y), 'section_x' (X-Z) or 'section_y' (Y-Z). color_by: any numeric
+    airway field, e.g. 'Velocity m/s', 'Quantity', 'Pressure Branch'. Line width follows
+    airflow, fans are circles, airways in 'highlight' (Unique No, e.g. from trace_airflow)
+    are drawn on top in magenta. Hover an airway for its values. Never overwrites a file."""
+    dst = os.path.abspath(os.path.expanduser(out_path))
+    if not dst.lower().endswith(".svg"):
+        raise ValueError("out_path must end with .svg")
+    if os.path.exists(dst):
+        raise ValueError("out_path already exists; choose a new file name")
+    text, n = render.svg(_load(path), view, color_by, {str(u) for u in (highlight or [])}, width_px)
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(text)
+    return f"{n} airways drawn to {dst}"
+
+
+@mcp.tool()
 def export_csv(path: str, out_path: str, columns: list[str] | None = None) -> str:
     """Write airways to a CSV file. 'columns' may name any column of the .vsm table;
     by default the common fields are exported."""
@@ -362,10 +446,11 @@ def export_csv(path: str, out_path: str, columns: list[str] | None = None) -> st
 @mcp.tool()
 def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
     """EXPERIMENTAL. Copy the model to 'out_path' (never overwrites the source) after
-    changing text fields. Each edit: {"unique_no": "12", "field": "Notes", "value": "..."}.
-    Allowed fields: Notes, Group, Branch Name. Geometry and results are not touched, so
-    open the copy in Ventsim and re-simulate."""
-    allowed = {"Notes", "Group", "Branch Name"}
+    changing fields. Each edit: {"unique_no": "12", "field": "Notes", "value": "..."}.
+    Allowed fields: Notes, Group, Branch Name (text), Fan Speed (% of curve speed, 1-200,
+    fan airways only) and Fan Off (true/false, fan airways only). Saved results are not
+    recomputed: open the copy in Ventsim and re-simulate (what_if gives an estimate)."""
+    allowed = {"Notes", "Group", "Branch Name", "Fan Speed", "Fan Off"}
     src = os.path.abspath(os.path.expanduser(path))
     dst = os.path.abspath(os.path.expanduser(out_path))
     if src == dst:
@@ -384,6 +469,21 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
         if n is None:
             raise ValueError(f"no airway with Unique No {e['unique_no']}")
         cells = m.row(n)
+        if e["field"] in ("Fan Speed", "Fan Off"):
+            if m.value(cells, "Fan Type") in ("", "0"):
+                raise ValueError(f"airway {e['unique_no']} has no fan")
+            if e["field"] == "Fan Speed":
+                try:
+                    v = float(value)
+                except ValueError:
+                    raise ValueError("Fan Speed must be a number (percent)") from None
+                if not 1 <= v <= 200:
+                    raise ValueError("Fan Speed must be between 1 and 200 %")
+                value = f"{v:g}"
+            elif value.lower() in ("true", "false"):
+                value = "True" if value.lower() == "true" else "False"
+            else:
+                raise ValueError("Fan Off must be true or false")
         cells[m.col(e["field"])] = value
         m.lines[m.row_indexes[n]] = "\t".join(cells)
     vsm.dump(m, dst)
