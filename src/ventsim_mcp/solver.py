@@ -233,7 +233,6 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         dens.append(mf / q_s if q_s and mf and 0.3 < mf / q_s < 3 else rho)
         br.append((a, b, R, curve, n, uid, a, b, r, qfix, nvp))
     N = (max(max(e) for e in ends) + 1) if ends else 0
-    M = len(br)
     P = np.zeros(N)
     fixed = np.zeros(N, bool)
     for i, j, R, c, n, uid, a, b, r, _qf, _nv in br:
@@ -254,6 +253,14 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             P[i] = P[j] + drop
         else:
             P[j] = P[i] - drop
+    return _network(br, dens, P, fixed, N, iterations, tol)
+
+
+
+def _network(br, dens, P, fixed, N, iterations, tol, dp_floor=0.0):
+    """Newton iteration on node pressures for the airways in ``br`` (mass balance with the
+    densities ``dens``); nodes marked in ``fixed`` keep their pressure."""
+    M = len(br)
     free = np.where(~fixed)[0]
     pos = -np.ones(N, int)
     pos[free] = np.arange(len(free))
@@ -269,7 +276,7 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         dp = Pv[I] - Pv[J] + NV
         # airways without fan or fixed flow: closed form q = sign(dp) sqrt(|dp|/R)
         Q = np.sign(dp) * np.sqrt(np.abs(dp) / Rv)
-        G = 1.0 / np.maximum(2.0 * np.sqrt(np.abs(dp) * Rv), 1e-9)
+        G = 1.0 / np.maximum(2.0 * np.sqrt(np.maximum(np.abs(dp), dp_floor) * Rv), 1e-9)
         for k in special:
             _i, _j, R, c, n, _u, _a, _b, _r, qf, _nv = br[k]
             Q[k], G[k] = _flow(dp[k], R, c, n, qf)
@@ -310,6 +317,84 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         P, Q, G, imb = Pn, Qn, Gn, imbn
     return {"uid": [b[5] for b in br], "Q": Q, "P": P, "branches": br, "iterations": it + 1,
             "residual": float(np.max(np.abs(imb[free]))) / 1.2 if len(free) else 0.0}
+
+DEAD_END_FLAG = 1 << 18  # 'Branch Flags' bit Ventsim sets on airways ending in a dead end
+SURFACE_FLAGS = (1 << 12, 1 << 13)  # 'Branch Flags' bits: entry / exit end open to surface
+PRESSURE_FIX_FLAG = 1 << 19  # 'Pressure Fix' is only applied when this bit is set
+TOTAL_AS_IS = True  # total-pressure curves act as total pressure (no outlet loss)
+QFIX_MASK = (1 << 2) | (1 << 4)  # Branch Flags bits that switch a QuantityFix on
+
+
+def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,
+             resistance_scale: dict[str, float] | None = None, fans_off: set[str] | None = None,
+             fan_speed: dict[str, float] | None = None, nvp_from_file: bool = False,
+             density_from_file: bool = False) -> dict:
+    """Solve the airflow from the model inputs only, without any saved results: airway
+    resistance ('Resistance Total'), fan curves at their speed and count, fixed-flow and
+    fixed-pressure airways, closed airways ('Resistance Type' 1) and fans switched off.
+    Loose ends are at atmospheric pressure unless Ventsim flagged them as dead ends; air
+    is incompressible at 1.2 kg/m3 and natural ventilation is ignored (no heat model)."""
+    resistance_scale = resistance_scale or {}
+    fans_off = fans_off or set()
+    fan_speed = fan_speed or {}
+    curves = _curve(model)
+    mask = vsm.active_mask(model)
+    rows = [r for r, k in zip(model.rows(), mask) if k]
+    ends = [list(e) for e, k in zip(vsm.node_ids(model), mask) if k]
+
+    def flags_of(r):
+        try:
+            return int(float(model.value(r, "Branch Flags") or 0))
+        except ValueError:
+            return 0
+
+    def degrees():
+        d: dict[int, int] = defaultdict(int)
+        for a, b in ends:
+            d[a] += 1
+            d[b] += 1
+        return d
+
+    deg = degrees()
+    br, dead, open_ = [], set(), set()
+    for r, (a, b) in zip(rows, ends):
+        uid = model.value(r, "Unique No")
+        R = max(model.num(r, "Resistance Total"), 1e-7) * resistance_scale.get(uid, 1.0)
+        ft = model.value(r, "Fan Type")
+        off = model.value(r, "Fan Off") == "True" or uid in fans_off
+        raw = curves.get(ft) if ft not in ("", "0") and not off else None
+        speed = fan_speed.get(uid, model.num(r, "Fan Speed", 100.0) or 100.0) / 100.0
+        flags = flags_of(r)
+        for s_, k in enumerate((a, b)):
+            # a loose end is open to the atmosphere when flagged as a surface connection, or
+            # when it carries no dead-end flag at all (e.g. duct outlets in HVAC models)
+            if deg[k] == 1 and (flags & SURFACE_FLAGS[s_] or not flags & DEAD_END_FLAG):
+                open_.add(k)
+        pfix = model.num(r, "Pressure Fix") if flags & PRESSURE_FIX_FLAG else 0.0
+        const = pfix if raw is None and pfix and not off else None
+        n = max(model.num(r, "Fan Numbers", 1.0), 1.0)
+        curve = _scaled(raw, speed, const, 1.2, eq_total=TOTAL_AS_IS)
+        qf = model.num(r, "QuantityFix")
+        qfix = qf if qf and (QFIX_MASK is None or flags & QFIX_MASK) else None
+        if model.value(r, "Resistance Type") == "1" and uid not in resistance_scale:
+            qfix = 0.0
+        nvp = model.num(r, "Calc NVP Pressure") if nvp_from_file else 0.0
+        br.append((a, b, R, curve, n, uid, a, b, r, qfix, nvp))
+    N = (max(max(e) for e in ends) + 1) if ends else 0
+    P = np.zeros(N)
+    fixed = np.zeros(N, bool)
+    for k in open_:
+        fixed[k] = True  # open to the atmosphere; other loose ends are dead ends
+    dens = [1.2] * len(br)
+    if density_from_file:
+        dens = []
+        for b_ in br:
+            q_s, mf = model.num(b_[8], "Quantity"), model.num(b_[8], "Dry Massflow")
+            dens.append(mf / q_s if q_s and mf and 0.3 < mf / q_s < 3 else 1.2)
+    out = _network(br, dens, P, fixed, N, iterations, tol, dp_floor=1e-3)
+    out["open_ends"] = int(fixed.sum())
+    out["dead_ends"] = sum(1 for k, d in deg.items() if d == 1 and k not in open_)
+    return out
 
 
 def fan_duty(model: vsm.Model) -> list[dict]:
