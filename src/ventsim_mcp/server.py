@@ -157,6 +157,23 @@ def fan_summary(path: str) -> dict:
 
 
 @mcp.tool()
+def fan_duty_check(path: str, only_problems: bool = False) -> dict:
+    """Where every fan of the simulated stage runs on its curve: airflow per fan, position
+    between the first and last curve point (0..1), margin to the stall peak, static
+    efficiency as saved by Ventsim and a status: ok, near_stall (within 10 % of the peak
+    flow), stall_region (left of the pressure peak), beyond_curve, below_curve, no_flow,
+    fixed_flow (airflow fixed, the curve is not used), off or no_curve. Uses the results
+    saved in the file."""
+    fans = solver.fan_duty(_load(path))
+    counts: dict[str, int] = defaultdict(int)
+    for f in fans:
+        counts[f["status"]] += 1
+    if only_problems:
+        fans = [f for f in fans if f["status"] not in ("ok", "off", "fixed_flow")]
+    return {"fans": len(fans), "by_status": dict(counts), "items": fans}
+
+
+@mcp.tool()
 def compare_models(path_a: str, path_b: str, min_change: float = 0.1, limit: int = 50) -> dict:
     """Compare two saved versions of a model by Unique No: added/removed airways and
     those whose airflow (m3/s) or branch pressure (Pa) changed by more than min_change."""

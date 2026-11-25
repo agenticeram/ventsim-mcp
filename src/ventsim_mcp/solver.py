@@ -61,7 +61,8 @@ def _curve(model: vsm.Model) -> dict[str, dict]:
         for q, pr in curve:
             top = min(top, pr)
             fixed.append((q, top))
-        out[k] = {"points": fixed, "total": not use1, "area": meta[k][0], "ref": meta[k][1]}
+        out[k] = {"points": fixed, "raw": curve, "total": not use1, "area": meta[k][0],
+                  "ref": meta[k][1]}
     return out
 
 
@@ -303,3 +304,65 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         P, Q, G, imb = Pn, Qn, Gn, imbn
     return {"uid": [b[5] for b in br], "Q": Q, "P": P, "branches": br, "iterations": it + 1,
             "residual": float(np.max(np.abs(imb[free]))) / 1.2 if len(free) else 0.0}
+
+
+def fan_duty(model: vsm.Model) -> list[dict]:
+    """Where each fan of the simulated stage runs on its curve.
+
+    The duty flow per fan (airway flow / number of fans) is brought back to the curve's
+    reference speed by the affinity laws and placed on the curve as published (before the
+    stall hump is flattened for the solver). Left of the pressure peak the curve rises with
+    flow: that is the stall region, where parallel fans can share air unevenly and
+    airflow can surge. Beyond the last point the fan runs off its published curve."""
+    curves = _curve(model)
+    names = vsm.fan_types(model)
+    out = []
+    for r, active in zip(model.rows(), vsm.active_mask(model)):
+        ft = model.value(r, "Fan Type")
+        if not active or ft in ("", "0"):
+            continue
+        q = model.num(r, "Quantity")
+        n = max(model.num(r, "Fan Numbers", 1.0), 1.0)
+        speed = model.num(r, "Fan Speed", 100.0) or 100.0
+        pfan = model.num(r, "Pressure Fan")
+        power = model.num(r, "Fan Power")
+        d = {"Unique No": model.value(r, "Unique No"), "Branch Name": model.value(r, "Branch Name"),
+             "Fan Name": names.get(ft, ft), "fans": int(n), "speed_pct": round(speed, 1),
+             "airflow_per_fan_m3s": round(abs(q) / n, 3), "fan_pressure_pa": round(pfan, 1),
+             "power_kw": round(power, 2),
+             "static_efficiency_pct": round(model.num(r, "Pressure Eff"), 1) or None}
+        c = curves.get(ft)
+        qf = model.num(r, "QuantityFix")
+        dp = model.num(r, "Pressure From") - model.num(r, "Pressure To") + model.num(r, "Calc NVP Pressure")
+        rq = model.num(r, "Resistance Total") * q * abs(q)
+        if qf and abs(qf - q) <= 0.001 * abs(qf):
+            d["status"] = "fixed_flow"  # pressure is whatever forces the fixed airflow
+            d["static_efficiency_pct"] = None
+        elif model.value(r, "Fan Off") == "True" and abs(dp - rq) < 0.05 * max(abs(pfan), 1.0):
+            d["status"] = "off"
+        elif c is None:
+            d["status"] = "no_curve"
+        else:
+            raw = c["raw"]
+            qr = abs(q) / n / (speed / 100.0)
+            qmin, qmax = raw[0][0], raw[-1][0]
+            peak = max(raw, key=lambda t: t[1])[0]
+            d["curve_flow_range_m3s"] = [round(qmin, 3), round(qmax, 3)]
+            d["position_on_curve"] = round((qr - qmin) / (qmax - qmin), 3) if qmax > qmin else None
+            if peak > qmin:
+                d["stall_peak_flow_m3s"] = round(peak, 3)
+                d["stall_margin"] = round((qr - peak) / peak, 3)
+            if abs(q) < 1e-6:
+                d["status"] = "no_flow"
+            elif peak > qmin and qr < peak:
+                d["status"] = "stall_region"
+            elif qr > qmax * 1.001:
+                d["status"] = "beyond_curve"
+            elif qr < qmin * 0.999:
+                d["status"] = "below_curve"
+            elif peak > qmin and qr < peak * 1.1:
+                d["status"] = "near_stall"
+            else:
+                d["status"] = "ok"
+        out.append(d)
+    return out
