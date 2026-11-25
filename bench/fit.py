@@ -6,8 +6,6 @@ from ventsim_mcp import solver, vsm
 folder = sys.argv[1]
 for f in sorted(glob.glob(os.path.join(folder, "*.vsm"))):
     m = vsm.parse(f)
-    if len(m.row_indexes) > 1500:
-        continue
     t = time.time()
     s = solver.solve(m)
     saved = {m.value(r, "Unique No"): m.num(r, "Quantity") for r in m.rows()}

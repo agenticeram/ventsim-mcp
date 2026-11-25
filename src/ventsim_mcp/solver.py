@@ -133,7 +133,7 @@ def _flow(dp, R, ps_fn, n, qfix=None):
 
 
 def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
-          fans_off: set[str] | None = None, use_nvp: bool = True, iterations: int = 100, tol: float = 1e-3):
+          fans_off: set[str] | None = None, use_nvp: bool = True, iterations: int = 100, tol: float = 5e-3):
     resistance_scale = resistance_scale or {}
     fans_off = fans_off or set()
     curves = _curve(model)
@@ -158,12 +158,21 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             R = max(-pb / (q_saved * abs(q_saved)), 1e-7)
         R *= resistance_scale.get(uid, 1.0)
         ft = model.value(r, "Fan Type")
-        raw_all = curves.get(ft) if ft not in ("", "0") else None
+        # A fan that was stopped when Ventsim saved the results is a plain airway. The
+        # 'Fan Off' flag is not reliable on its own (it can belong to another stage), so
+        # trust the saved state: the pressure drop is explained by resistance alone.
+        q_sv = model.num(r, "Quantity")
+        dp_sv = model.num(r, "Pressure From") - model.num(r, "Pressure To") + (
+            model.num(r, "Calc NVP Pressure") if use_nvp else 0.0)
+        r_sv = model.num(r, "Resistance Total") * q_sv * abs(q_sv)
+        off_in_file = (model.value(r, "Fan Off") == "True"
+                       and abs(dp_sv - r_sv) < 0.05 * max(model.num(r, "Pressure Fan"), 1.0))
+        raw_all = curves.get(ft) if ft not in ("", "0") and not off_in_file else None
         raw = raw_all if uid not in fans_off else None
         # an airway with a pressure source but no fan curve (fixed-pressure airway): keep
         # the stored pressure rise constant
         pfan = model.num(r, "Pressure Fan")
-        const = pfan if raw is None and pfan and uid not in fans_off else None
+        const = pfan if raw is None and pfan and uid not in fans_off and not off_in_file else None
         speed = model.num(r, "Fan Speed", 100.0) / 100.0
         T = model.num(r, "db air In") + 273.15
         pa = model.num(r, "p air In")
@@ -193,7 +202,7 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             if have > 1 and need > 0:
                 gain *= min(max(need / have, 0.2), 5.0)
         curve = _scaled(raw, speed, const, rho, gain, eq_total)
-        pfan_c = pfan if raw_all is None and pfan else None
+        pfan_c = pfan if raw_all is None and pfan and not off_in_file else None
         base.append((R / resistance_scale.get(uid, 1.0), _scaled(raw_all, speed, pfan_c, rho, gain, eq_total)))
         qf = model.num(r, "QuantityFix")
         qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.001 * abs(qf) else None
