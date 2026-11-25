@@ -38,6 +38,10 @@ def test_summary(model_path):
     assert s["ventsim_version"] == "6.0.0.0"
 
 
+def test_fan_name(model_path):
+    assert vsm.fans(vsm.parse(model_path))[0]["Fan Name"] == "Test Fan"
+
+
 def test_roundtrip(model_path, tmp_path):
     out = tmp_path / "o.vsm"
     vsm.dump(vsm.parse(model_path), str(out))

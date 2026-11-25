@@ -131,6 +131,27 @@ BASIC_FIELDS = (
 )
 
 
+def _is_number(x: str) -> bool:
+    try:
+        float(x)
+        return True
+    except ValueError:
+        return False
+
+
+def fan_types(model: Model) -> dict[str, str]:
+    """Fan type id -> name, from the FANS section (header rows carry a text name)."""
+    out: dict[str, str] = {}
+    for r in model.section("FANS"):
+        if len(r) > 2 and r[1] and not _is_number(r[1]):
+            out[r[0]] = r[1]
+    return out
+
+
+def air_types(model: Model) -> dict[str, str]:
+    return {r[0]: r[1] for r in model.section("AIRTYPES") if len(r) > 1}
+
+
 def airway(model: Model, row: list[str]) -> dict:
     d: dict = {}
     for name in BASIC_FIELDS:
@@ -144,6 +165,8 @@ def airway(model: Model, row: list[str]) -> dict:
                 d[name] = None
     area = d.get("Area") or 0
     q = d.get("Quantity") or 0
+    names = model.__dict__.setdefault("_fan_names", fan_types(model))
+    d["Fan Name"] = names.get(d["Fan Type"], "") if d["Fan Type"] not in ("", "0") else ""
     d["Velocity m/s"] = round(abs(q) / area, 3) if area else None
     return d
 

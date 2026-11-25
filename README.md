@@ -18,7 +18,7 @@ the file.
 | `model_summary` | Title, Ventsim version, airway and fan counts, total length, depth range |
 | `list_airways` | Filter by name/notes or minimum velocity, sort by any field (airflow, length, pressure...) |
 | `get_airway` | Every column of one airway |
-| `list_fans` | Fan airways with duty airflow, fan pressure, power |
+| `list_fans` | Fan airways with fan model name, duty airflow, fan pressure, power |
 | `check_flow_balance` | Airflow mass balance at every junction (finds un-simulated or broken networks) |
 | `export_csv` | Airways to CSV, any columns |
 | `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name |
