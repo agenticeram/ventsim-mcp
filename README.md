@@ -23,6 +23,7 @@ the file.
 | `fan_summary` | Fans by model with total `Fan Power` as stored in the file (kW) |
 | `compare_models` | Diff two saved versions: added/removed airways, airflow and pressure changes |
 | `check_flow_balance` | Airflow mass balance at every junction (finds un-simulated or broken networks) |
+| `what_if` | Experimental: re-solve the network after scaling airway resistance or switching fans off, report airflow changes |
 | `export_csv` | Airways to CSV, any columns |
 | `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name |
 
@@ -48,6 +49,16 @@ A `.vsm` is a gzip-compressed, CRLF-separated, tab-delimited text file. The airw
 at a header line beginning `MAIN<TAB>Unique No`, which names all ~288 columns; the parser uses
 those names, never fixed positions. Reading and writing is byte-exact when nothing is edited. A `.txt` export of the same file (uncompressed) is read too.
 The CSV/NBC/XLSX exports are headerless or derived dumps of the same tables and are not supported; use the `.vsm`/`.txt`.
+
+## What-if solver (experimental)
+
+`what_if` solves node pressures with the resistances and fan curves stored in the file
+(`dP = R*Q|Q| - Ps(Q)`; the stored resistance and pressures match this relation exactly).
+It reports changes relative to an unmodified solve of the same model, and returns a
+`baseline_fit` so you can see how well it reproduces Ventsim's own saved flows. On
+DemoMine the mean error is 4.4 % (max 7.9 m3/s). It does not model fixed-flow airways,
+fires, heat or natural ventilation pressure: on the Tutorial1 and Fire examples the
+baseline is off by 20-90 %, and the tool tells you so. Treat results as a first estimate.
 
 ## Limits
 
