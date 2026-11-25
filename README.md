@@ -19,6 +19,9 @@ the file.
 | `list_airways` | Filter by name/notes or minimum velocity, sort by any field (airflow, length, pressure...) |
 | `get_airway` | Every column of one airway |
 | `list_fans` | Fan airways with fan model name, duty airflow, fan pressure, power |
+| `velocity_check` | Airways above a maximum (or below a minimum) air velocity |
+| `fan_summary` | Fans by model with total `Fan Power` as stored in the file (kW) |
+| `compare_models` | Diff two saved versions: added/removed airways, airflow and pressure changes |
 | `check_flow_balance` | Airflow mass balance at every junction (finds un-simulated or broken networks) |
 | `export_csv` | Airways to CSV, any columns |
 | `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name |

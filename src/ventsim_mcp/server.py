@@ -109,6 +109,63 @@ def check_flow_balance(path: str, tolerance: float = 0.5, limit: int = 30) -> di
 
 
 @mcp.tool()
+def velocity_check(path: str, max_velocity: float = 20.0, min_velocity: float = 0.0,
+                   limit: int = 50) -> dict:
+    """Find airways whose simulated air velocity (m/s) is above max_velocity or, if
+    min_velocity > 0, below it while still carrying air (e.g. dust/gas settling limits).
+    Airways with zero airflow are ignored."""
+    over, under = [], []
+    for w in vsm.airways(_load(path)):
+        v = w["Velocity m/s"]
+        if not v:
+            continue
+        item = {k: w[k] for k in ("Unique No", "Branch Name", "Quantity", "Area", "Velocity m/s")}
+        if v > max_velocity:
+            over.append(item)
+        elif min_velocity and v < min_velocity:
+            under.append(item)
+    over.sort(key=lambda d: -d["Velocity m/s"])
+    under.sort(key=lambda d: d["Velocity m/s"])
+    return {"over_max": len(over), "under_min": len(under),
+            "highest": over[:limit], "lowest": under[:limit]}
+
+
+@mcp.tool()
+def fan_summary(path: str) -> dict:
+    """Totals for all fans: count by model, airflow, total fan power (kW)."""
+    fs = vsm.fans(_load(path))
+    by_model: dict[str, dict] = {}
+    for f in fs:
+        name = f["Fan Name"] or f["Fan Type"]
+        n = f["Fan Numbers"] or 1
+        e = by_model.setdefault(name, {"airways": 0, "fans": 0, "power_kw": 0.0})
+        e["airways"] += 1
+        e["fans"] += n
+        e["power_kw"] = round(e["power_kw"] + (f["Fan Power"] or 0), 2)
+    return {"total_power_kw": round(sum(e["power_kw"] for e in by_model.values()), 2),
+            "by_model": by_model}
+
+
+@mcp.tool()
+def compare_models(path_a: str, path_b: str, min_change: float = 0.1, limit: int = 50) -> dict:
+    """Compare two saved versions of a model by Unique No: added/removed airways and
+    those whose airflow (m3/s) or branch pressure (Pa) changed by more than min_change."""
+    a = {w["Unique No"]: w for w in vsm.airways(_load(path_a))}
+    b = {w["Unique No"]: w for w in vsm.airways(_load(path_b))}
+    changed = []
+    for k in a.keys() & b.keys():
+        dq = (b[k]["Quantity"] or 0) - (a[k]["Quantity"] or 0)
+        dp = (b[k]["Pressure Branch"] or 0) - (a[k]["Pressure Branch"] or 0)
+        if abs(dq) > min_change or abs(dp) > min_change:
+            changed.append({"Unique No": k, "Branch Name": b[k]["Branch Name"],
+                            "airflow_a": a[k]["Quantity"], "airflow_b": b[k]["Quantity"],
+                            "delta_airflow": round(dq, 3), "delta_pressure": round(dp, 3)})
+    changed.sort(key=lambda d: -abs(d["delta_airflow"]))
+    return {"added": sorted(b.keys() - a.keys(), key=int), "removed": sorted(a.keys() - b.keys(), key=int),
+            "changed": len(changed), "largest_changes": changed[:limit]}
+
+
+@mcp.tool()
 def export_csv(path: str, out_path: str, columns: list[str] | None = None) -> str:
     """Write airways to a CSV file. 'columns' may name any column of the .vsm table;
     by default the common fields are exported."""

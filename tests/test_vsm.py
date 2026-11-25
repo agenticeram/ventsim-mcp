@@ -63,3 +63,12 @@ def test_edit_never_overwrites(model_path, tmp_path):
     with pytest.raises(ValueError):
         server.edit_airways(model_path, str(tmp_path / "x.vsm"),
                             [{"unique_no": "2", "field": "Width", "value": "9"}])
+
+
+def test_velocity_and_fans_and_compare(model_path, tmp_path):
+    r = server.velocity_check(model_path, max_velocity=1.5)
+    assert r["over_max"] == 1 and r["highest"][0]["Unique No"] == "1"  # 50/25 = 2 m/s
+    assert server.fan_summary(model_path)["by_model"]["Test Fan"]["fans"] == 1
+    other = str(tmp_path / "b.vsm")
+    server.edit_airways(model_path, other, [{"unique_no": "2", "field": "Notes", "value": "x"}])
+    assert server.compare_models(model_path, other)["changed"] == 0
