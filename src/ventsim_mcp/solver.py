@@ -211,6 +211,15 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         if closed and uid not in resistance_scale:
             qfix = 0.0  # closed airway (stopping/sealed): carries no air
         nvp = model.num(r, "Calc NVP Pressure") if use_nvp else 0.0
+        if qfix is None and abs(q_saved) > 1e-6:
+            # Pressure terms the file does not itemise (velocity-pressure changes, Ventsim's
+            # own convergence residual): whatever the saved state needs beyond resistance,
+            # fan and natural ventilation is kept as a fixed pressure, like the NVP.
+            R0 = R / resistance_scale.get(uid, 1.0)
+            c0 = _scaled(raw_all, speed, pfan if raw_all is None and pfan and not off_in_file else None,
+                         rho, gain, eq_total)
+            ps0 = c0(q_saved / n)[0] if c0 else 0.0
+            nvp -= (dp_saved + nvp) - (R0 * q_saved * abs(q_saved) - ps0)
         # Ventsim conserves mass, not volume: air heated or compressed along the way changes
         # volume. Keep each airway's saved density and balance mass flow at the nodes.
         q_s, mf = model.num(r, "Quantity"), model.num(r, "Dry Massflow")

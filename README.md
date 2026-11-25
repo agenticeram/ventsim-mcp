@@ -68,28 +68,27 @@ reads from the file:
   speed by the affinity laws, curve calibrated through the saved duty point. A fan whose
   saved pressure drop is resistance only is treated as stopped.
 - **Boundaries**: portals and dead ends are held at the pressure that reproduces the saved
-  flow; natural ventilation pressure stays at its saved value.
+  flow.
+- **Unitemised pressure terms**: natural ventilation pressure, velocity-pressure changes and
+  Ventsim's own convergence residual per airway are frozen at their saved values.
 
-Because resistances, fan duty points and boundaries are taken from the saved state, the
-fit below is largely a consistency check that the network was read correctly, not an
-independent accuracy figure (total absolute flow error / total flow,
-`python bench/fit.py <folder>`):
+Because these inputs come from the saved state, re-solving an unchanged model reproduces
+Ventsim's airflow almost exactly. That checks the network was read correctly (stages,
+junctions, closed airways, fans); it is not an accuracy figure for changes
+(total absolute flow error / total flow, `python bench/fit.py <folder>`):
 
 | Ventsim DESIGN 6 example | Airways solved | Error |
 |---|---|---|
-| CoalMine | 3,403 | 0.58 % |
-| Fire2 | 151 | 0.85 % |
-| HVACDemo | 55 | 0.70 % |
-| without_ducting | 408 | 0.16 % |
-| diamondmine | 1,057 | 0.07 % |
-| Blue_sky | 531 | 0.05 % |
-| InclinedHeatMine, Tutorial2, HVACDemoB, NatVent, Fire | | < 0.05 % |
-| DemoMine, DevSolids, RealMine, RealMine 2, CoalMine2, Tutorial1, HVACDemoA, Heat Strategies | | < 0.01 % |
+| diamondmine | 1,057 | 0.06 % |
+| Tutorial2 | 184 | 0.04 % |
+| InclinedHeatMine | 810 | 0.02 % |
+| the other 17 examples (CoalMine 3,403 airways, Blue_sky, Fire, HVAC, ...) | | < 0.01 % |
 
-**Independent check.** `Fire` and `Fire2` are the same network with two airway
+**Accuracy for changes.** `Fire` and `Fire2` are the same network with two airway
 resistances changed. Predicting Fire2 from Fire plus those two changes
-(`python bench/predict.py Fire.vsm Fire2.vsm`) reproduces 96.9 % of the airflow change
-Ventsim computed; the remaining error is 0.03 % of total flow.
+(`python bench/predict.py Fire.vsm Fire2.vsm`) gives an airflow error of 0.03 % of total
+flow; it reproduces 96.7 % of the airflow change Ventsim computed. This is the only such
+pair among the shipped examples, so treat it as one data point.
 
 Heat, density and fire effects are not re-evaluated after a change. Treat results as an
 estimate and confirm in Ventsim.
