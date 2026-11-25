@@ -53,19 +53,27 @@ The CSV/NBC/XLSX exports are headerless or derived dumps of the same tables and 
 ## What-if solver (experimental)
 
 `what_if` solves node pressures with the resistances and fan curves stored in the file
-(`dP = R*Q|Q| - Ps(Q)`; the stored resistance and pressures match this relation exactly).
-It honours fan speed (affinity laws), fixed-flow airways and fixed-pressure airways, and
-reports changes relative to an unmodified solve of the same model, together with a
-`baseline_fit` showing how well the solver reproduces Ventsim's own saved flows.
+(`dP = R*Q|Q| - Ps(Q) - NVP`). It honours fan speed (affinity laws), fixed-flow airways,
+fixed-pressure airways and the natural ventilation pressure saved per airway, and reports
+changes relative to an unmodified solve of the same model, together with a `baseline_fit`
+showing how well the solver reproduces the flows Ventsim saved. It uses sparse matrices and
+solves a 1,300-airway model in about two seconds.
 
-| Example model | Mean flow error vs. saved results |
+Flow error against the saved results (sum of absolute errors / total flow;
+`python bench/fit.py <folder>` reproduces this for any folder of models):
+
+| Example model | Error |
 |---|---|
-| Tutorial1 | 0 % |
-| DemoMine | 1.6 % (max 0.55 m3/s) |
-| Fire | not usable (fire, fixed-pressure airways) |
+| Tutorial1, RealMine, RealMine 2, Heat Strategies | < 0.1 % |
+| DemoMine | 0.3 % |
+| Natural Ventilation Effects | 1.5 % |
+| InclinedHeatMine | 1.9 % (did not fully converge) |
+| Fire, Fire2 | 2.5 % |
+| without_ducting | 3.1 % (a main fan runs beyond its tabulated curve) |
+| Blue_sky | ~50 %, not converged: do not use |
 
-Not modelled: fires, heat and natural ventilation pressure, regulators set by flow. Treat
-results as a first estimate and confirm in Ventsim.
+Heat, density and fire effects are not re-evaluated after a change: natural ventilation
+pressure stays at the saved value. Treat results as a first estimate and confirm in Ventsim.
 
 ## Limits
 
