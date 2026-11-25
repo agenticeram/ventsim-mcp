@@ -28,7 +28,7 @@ All values are in the SI units Ventsim stores internally (m, m3/s, Pa, kW).
 ## Install
 
 ```
-pip install git+https://github.com/gathre/ventsim-mcp
+pip install git+https://github.com/agenticeram/ventsim-mcp
 ```
 
 Claude Desktop / Claude Code config:
