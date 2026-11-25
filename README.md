@@ -2,6 +2,8 @@
 
 <!-- mcp-name: io.github.agenticeram/ventsim-mcp -->
 
+[![agenticeram/ventsim-mcp MCP server](https://glama.ai/mcp/servers/agenticeram/ventsim-mcp/badges/score.svg)](https://glama.ai/mcp/servers/agenticeram/ventsim-mcp)
+
 An [MCP](https://modelcontextprotocol.io) server that lets AI assistants read and inspect
 **Ventsim** mine ventilation models (`.vsm` files).
 
