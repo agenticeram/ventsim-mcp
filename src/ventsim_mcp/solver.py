@@ -134,8 +134,11 @@ def _flow(dp, R, ps_fn, n, qfix=None):
 
 
 def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
-          fans_off: set[str] | None = None, use_nvp: bool = True, iterations: int = 100, tol: float = 5e-3):
+          fans_off: set[str] | None = None, use_nvp: bool = True, iterations: int = 100, tol: float = 5e-3,
+          fan_speed: dict[str, float] | None = None):
+    """fan_speed: Unique No -> new speed in % of the curve's speed (affinity laws)."""
     resistance_scale = resistance_scale or {}
+    fan_speed = fan_speed or {}
     fans_off = fans_off or set()
     curves = _curve(model)
     # only the airways of the simulated stage form the network
@@ -202,7 +205,10 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             have = f0(q_saved / n)[0]
             if have > 1 and need > 0:
                 gain *= min(max(need / have, 0.2), 5.0)
-        curve = _scaled(raw, speed, const, rho, gain, eq_total)
+        new_speed = fan_speed.get(uid, speed * 100.0) / 100.0
+        if const is not None and uid in fan_speed and speed > 0:
+            const *= (new_speed / speed) ** 2  # fixed-pressure source scales like a fan
+        curve = _scaled(raw, new_speed, const, rho, gain, eq_total)
         pfan_c = pfan if raw_all is None and pfan and not off_in_file else None
         base.append((R / resistance_scale.get(uid, 1.0), _scaled(raw_all, speed, pfan_c, rho, gain, eq_total)))
         qf = model.num(r, "QuantityFix")
