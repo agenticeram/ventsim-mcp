@@ -43,7 +43,8 @@ Then ask, for example: *"Open C:\models\mine.vsm and list the 10 airways with th
 
 A `.vsm` is a gzip-compressed, CRLF-separated, tab-delimited text file. The airway table starts
 at a header line beginning `MAIN<TAB>Unique No`, which names all ~288 columns; the parser uses
-those names, never fixed positions. Reading and writing is byte-exact when nothing is edited.
+those names, never fixed positions. Reading and writing is byte-exact when nothing is edited. A `.txt` export of the same file (uncompressed) is read too.
+The CSV/NBC/XLSX exports are headerless or derived dumps of the same tables and are not supported; use the `.vsm`/`.txt`.
 
 ## Limits
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -70,8 +71,10 @@ class Model:
 
     @property
     def version(self) -> str:
-        head = self.lines[0].split("\t")
-        return head[12].strip() if len(head) > 12 else ""
+        for cell in self.lines[0].split("	"):
+            if re.fullmatch(r"\s*\d+\.\d+\.\d+\.\d+\s*", cell):
+                return cell.strip()
+        return ""
 
     @property
     def title(self) -> str:
