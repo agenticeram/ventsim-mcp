@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+import math
+
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
@@ -21,16 +23,26 @@ from scipy.sparse.linalg import spsolve
 from . import vsm
 
 
-def _curve(model: vsm.Model) -> dict[str, list[tuple[float, float]]]:
+def _curve(model: vsm.Model) -> dict[str, dict]:
     """Fan type id -> [(flow m3/s, static pressure Pa)] sorted by flow.
 
     Static pressure is column 1 of each curve row; fans whose column 1 is zero throughout
     keep it in column 2."""
     raw: dict[str, list[tuple[float, float, float]]] = {}
+    meta: dict[str, tuple[float, float]] = {}
     cur = None
     for r in model.section("FANS"):
         if len(r) > 3 and r[1] and not vsm._is_number(r[1]):
             cur = raw.setdefault(r[0], [])
+            try:
+                d = float(r[2])
+            except ValueError:
+                d = 0.0
+            try:
+                ref = float(r[7])
+            except (ValueError, IndexError):
+                ref = 1.2
+            meta[r[0]] = (math.pi / 4 * d * d, ref or 1.2)
         elif cur is not None and len(r) > 3:
             try:
                 cur.append((float(r[3]), float(r[1]), float(r[2])))
@@ -40,36 +52,61 @@ def _curve(model: vsm.Model) -> dict[str, list[tuple[float, float]]]:
     for k, pts in raw.items():
         if len(pts) < 2:
             continue
-        use2 = not any(p[1] for p in pts)
-        out[k] = sorted((q, p2 if use2 else p1) for q, p1, p2 in pts)
+        # column 1 is the pressure unless the fan leaves it unset (0 or -999) throughout
+        use1 = all(p[1] >= 0 for p in pts) and any(p[1] > 0 for p in pts)
+        curve = sorted((q, p1 if use1 else p2) for q, p1, p2 in pts)
+        # a fan curve must not rise with flow (stall hump), or the airway equation
+        # stops being monotone and the solver wanders
+        fixed, top = [], float("inf")
+        for q, pr in curve:
+            top = min(top, pr)
+            fixed.append((q, top))
+        out[k] = {"points": fixed, "total": not use1, "area": meta[k][0], "ref": meta[k][1]}
     return out
 
 
 def _fan_p(curve, q):
-    """Static pressure and its slope at flow q (clamped to the tabulated range)."""
+    """Static pressure and slope at flow q: flat below the first point, linear
+    interpolation inside, and the last slope continued (down to zero) beyond the end."""
     qs = [p[0] for p in curve]
     ps = [p[1] for p in curve]
     if q <= qs[0]:
         return ps[0], 0.0
     if q >= qs[-1]:
-        return 0.0 if q > qs[-1] else ps[-1], 0.0
+        slope = (ps[-1] - ps[-2]) / (qs[-1] - qs[-2]) if qs[-1] > qs[-2] else 0.0
+        if slope >= 0:
+            return 0.0, 0.0
+        p = ps[-1] + slope * (q - qs[-1])
+        return (p, slope) if p > 0 else (0.0, 0.0)
     i = int(np.searchsorted(qs, q)) - 1
     slope = (ps[i + 1] - ps[i]) / (qs[i + 1] - qs[i])
     return ps[i] + slope * (q - qs[i]), slope
 
 
-def _scaled(curve, speed, const):
-    """Fan static-pressure function Ps(q) with affinity-law speed scaling, or a constant
-    pressure rise (fixed-pressure airway)."""
+def _scaled(fan, speed, const, rho=1.2, gain=1.0, eq_total=False):
+    """Fan static-pressure function Ps(q) with affinity-law speed scaling and density
+    correction, or a constant pressure rise (fixed-pressure airway). Curves given as total
+    pressure lose the velocity pressure at the fan outlet."""
     if const is not None:
         return lambda q: (const, 0.0)
-    if curve is None:
+    if fan is None:
         return None
     s = max(speed, 1e-3)
+    pts = fan["points"]
+    k = rho / fan["ref"]
+    area = fan["area"]
+    # a total-pressure curve loses the outlet velocity pressure unless the airway
+    # equation itself uses total pressure
+    total = fan["total"] and area > 0 and not eq_total
 
     def f(q):
-        p, d = _fan_p(curve, q / s)
-        return s * s * p, s * d
+        p, d = _fan_p(pts, q / s)
+        p, d = k * s * s * p, k * s * d
+        if total:
+            p -= 0.5 * rho * (q / area) ** 2
+            d -= rho * q / (area * area)
+        p, d = p * gain, d * gain  # total-pressure fans: see solve()
+        return p, d
 
     return f
 
@@ -118,10 +155,25 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         pfan = model.num(r, "Pressure Fan")
         const = pfan if raw is None and pfan and uid not in fans_off else None
         speed = model.num(r, "Fan Speed", 100.0) / 100.0
-        curve = _scaled(raw, speed, const)
+        T = model.num(r, "db air In") + 273.15
+        pa = model.num(r, "p air In")
+        rho = pa / (287.05 * T) if T > 200 and pa > 5e4 else 1.2
         n = max(model.num(r, "Fan Numbers", 1.0), 1.0)
+        gain, eq_total = 1.0, False
+        if raw is not None:
+            # Some fan types apply total pressure in the airway equation, others static.
+            # Decide from the saved results of this airway; if total, scale the static
+            # curve by the saved total/static ratio (smooth and monotone, unlike adding
+            # the velocity pressure explicitly).
+            q_s, pf, st = (model.num(r, c) for c in ("Quantity", "Pressure Fan", "Static Pressure"))
+            dp_s = model.num(r, "Pressure From") - model.num(r, "Pressure To")
+            rq = model.num(r, "Resistance Total") * q_s * abs(q_s)
+            if q_s and pf > st and abs(dp_s - (rq - pf)) < abs(dp_s - (rq - st)):
+                eq_total = True
+                gain = 1.0 if raw["total"] or st <= 1 else pf / st
+        curve = _scaled(raw, speed, const, rho, gain, eq_total)
         qf = model.num(r, "QuantityFix")
-        qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.02 * abs(qf) else None
+        qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.001 * abs(qf) else None
         nvp = model.num(r, "Calc NVP Pressure") if use_nvp else 0.0
         br.append((ids[a], ids[b], R, curve, n, uid, a, b, r, qfix, nvp))
     N = len(ids)
@@ -130,8 +182,8 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
     fixed = np.zeros(N, bool)
     for i, j, R, c, n, uid, a, b, r, _qf, _nv in br:
         for node, k, col in ((i, a, "Pressure From"), (j, b, "Pressure To")):
+            P[node] = model.num(r, col)  # start from the pressures saved by Ventsim
             if nodes[k] == 1:
-                P[node] = model.num(r, col)
                 fixed[node] = True
     free = np.where(~fixed)[0]
     pos = -np.ones(N, int)

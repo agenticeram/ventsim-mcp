@@ -172,15 +172,17 @@ def what_if(path: str, resistance_scale: dict[str, float] | None = None,
     curves and resistances, scaling resistance of given airways (Unique No -> factor, e.g.
     {"12": 50} for a new door) and/or switching fans off (list of Unique No), and returns
     the airflow change per airway relative to an unmodified solve of the same model.
-    'baseline_fit' tells you how well the solver reproduces the flows saved by Ventsim: if
-    mean_rel_error is above ~0.1 (fixed-flow airways, fires, natural ventilation), do not
-    trust the numbers. Always confirm in Ventsim."""
+    'baseline_fit' tells you how well the solver reproduces the flows saved by Ventsim
+    (mean_rel_error = total absolute flow error / total flow). If 'reliable' is false, or
+    junctions are unbalanced in the saved flows (ducting or leakage links the solver cannot
+    see), do not trust the numbers. Always confirm in Ventsim."""
     m = _load(path)
     base = solver.solve(m)
     mod = solver.solve(m, resistance_scale or {}, set(fans_off or []))
     stored = [m.num(r, "Quantity") for r in m.rows()]
     names = [m.value(r, "Branch Name") for r in m.rows()]
-    rel = [abs(abs(b) - abs(s)) / abs(s) for b, s in zip(base["Q"], stored) if s]
+    total = sum(abs(s) for s in stored)
+    rel = [sum(abs(abs(b) - abs(s)) for b, s in zip(base["Q"], stored)) / total] if total else []
     out = []
     for uid, name, s, b, q in zip(base["uid"], names, stored, base["Q"], mod["Q"]):
         d = float(q - b)
@@ -188,10 +190,12 @@ def what_if(path: str, resistance_scale: dict[str, float] | None = None,
             out.append({"Unique No": uid, "Branch Name": name, "stored_airflow": round(s, 3),
                         "estimated_airflow": round(s + d, 3), "delta": round(d, 3)})
     out.sort(key=lambda x: -abs(x["delta"]))
-    return {"baseline_fit": {"mean_rel_error": round(float(sum(rel) / len(rel)), 4) if rel else None,
+    return {"baseline_fit": {"mean_rel_error": round(float(rel[0]), 4) if rel else None,
                              "max_abs_error_m3s": round(float(max((abs(abs(b) - abs(s)) for b, s in zip(base["Q"], stored)), default=0)), 3),
                              "residual_m3s": round(mod["residual"], 4),
-                             "converged": mod["residual"] < 0.05},
+                             "converged": mod["residual"] < 0.05,
+                             "junctions_unbalanced_in_saved_flows": check_flow_balance(path)["unbalanced"],
+                             "reliable": bool(mod["residual"] < 0.05 and rel and rel[0] < 0.05)},
             "airways_changed": len(out), "largest_changes": out[:limit]}
 
 

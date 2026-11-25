@@ -59,18 +59,26 @@ changes relative to an unmodified solve of the same model, together with a `base
 showing how well the solver reproduces the flows Ventsim saved. It uses sparse matrices and
 solves a 1,300-airway model in about two seconds.
 
-Flow error against the saved results (sum of absolute errors / total flow;
+Fan curves are density-corrected, may be static or total pressure (decided from the
+saved results of each fan airway), are forced monotone and are extended past their last
+point. Flow error against the saved results (total absolute flow error / total flow;
 `python bench/fit.py <folder>` reproduces this for any folder of models):
 
 | Example model | Error |
 |---|---|
 | Tutorial1, RealMine, RealMine 2, Heat Strategies | < 0.1 % |
-| DemoMine | 0.3 % |
+| DemoMine | 0.13 % |
+| without_ducting | 0.6 % |
+| Fire, Fire2 | 0.9 % |
 | Natural Ventilation Effects | 1.5 % |
-| InclinedHeatMine | 1.9 % (did not fully converge) |
-| Fire, Fire2 | 2.5 % |
-| without_ducting | 3.1 % (a main fan runs beyond its tabulated curve) |
-| Blue_sky | ~50 %, not converged: do not use |
+| InclinedHeatMine | 1.8 % |
+| Blue_sky | 28 %: not reliable (see below) |
+
+Blue_sky links parts of the network that are not joined at a shared point (ducting or
+leakage connections); the airflow saved by Ventsim does not balance at 49 junctions when
+airways are matched by their end coordinates, so the solver cannot reproduce it. `what_if`
+reports `junctions_unbalanced_in_saved_flows` and `reliable` so such models are flagged
+instead of returning misleading numbers.
 
 Heat, density and fire effects are not re-evaluated after a change: natural ventilation
 pressure stays at the saved value. Treat results as a first estimate and confirm in Ventsim.
