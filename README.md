@@ -52,42 +52,50 @@ The CSV/NBC/XLSX exports are headerless or derived dumps of the same tables and 
 
 ## What-if solver (experimental)
 
-`what_if` solves node pressures with the resistances and fan curves stored in the file
-(`dP = R*Q|Q| - Ps(Q) - NVP`). It honours fan speed (affinity laws), fixed-flow airways,
-fixed-pressure airways and the natural ventilation pressure saved per airway, and reports
-changes relative to an unmodified solve of the same model, together with a `baseline_fit`
-showing how well the solver reproduces the flows Ventsim saved. It uses sparse matrices and
-solves a 1,300-airway model in about two seconds.
+`what_if` solves node pressures for the airways of the simulated stage, balancing mass
+flow (air expands as it warms) with `dP = R*Q|Q| - Ps(Q) - NVP` on every airway. What it
+reads from the file:
 
-Fan curves are density-corrected, may be static or total pressure (decided from the
-saved results of each fan airway), are forced monotone and are extended past their last
-point. Flow error against the saved results (total absolute flow error / total flow;
-`python bench/fit.py <folder>` reproduces this for any folder of models):
+- **Stage**: `Stage` is a bit mask and an airway that differs between stages is stored once
+  per stage, on top of each other. The stage whose saved airflow balances is used.
+- **Junctions**: airway ends closer than 5 cm are one node.
+- **Resistance**: the effective value from the saved pressure drop (includes fittings,
+  dampers, orifices); scaling in `what_if` multiplies it. Closed airways carry no air.
+- **Fans**: density-corrected curves, static or total pressure as the saved results show,
+  speed by the affinity laws, curve calibrated through the saved duty point. A fan whose
+  saved pressure drop is resistance only is treated as stopped.
+- **Boundaries**: portals and dead ends are held at the pressure that reproduces the saved
+  flow; natural ventilation pressure stays at its saved value.
 
-| Example model | Error |
-|---|---|
-| Tutorial1, RealMine, RealMine 2, Heat Strategies | < 0.1 % |
-| DemoMine | 0.13 % |
-| without_ducting | 0.6 % |
-| Fire, Fire2 | 0.9 % |
-| Natural Ventilation Effects | 1.5 % |
-| InclinedHeatMine | 1.8 % |
-| Blue_sky | 28 %: not reliable (see below) |
+Because resistances, fan duty points and boundaries are taken from the saved state, the
+fit below is largely a consistency check that the network was read correctly, not an
+independent accuracy figure (total absolute flow error / total flow,
+`python bench/fit.py <folder>`):
 
-Blue_sky links parts of the network that are not joined at a shared point (ducting or
-leakage connections); the airflow saved by Ventsim does not balance at 49 junctions when
-airways are matched by their end coordinates, so the solver cannot reproduce it. `what_if`
-reports `junctions_unbalanced_in_saved_flows` and `reliable` so such models are flagged
-instead of returning misleading numbers.
+| Ventsim DESIGN 6 example | Airways solved | Error |
+|---|---|---|
+| CoalMine | 3,403 | 0.58 % |
+| Fire2 | 151 | 0.85 % |
+| HVACDemo | 55 | 0.70 % |
+| without_ducting | 408 | 0.16 % |
+| diamondmine | 1,057 | 0.07 % |
+| Blue_sky | 531 | 0.05 % |
+| InclinedHeatMine, Tutorial2, HVACDemoB, NatVent, Fire | | < 0.05 % |
+| DemoMine, DevSolids, RealMine, RealMine 2, CoalMine2, Tutorial1, HVACDemoA, Heat Strategies | | < 0.01 % |
 
-Heat, density and fire effects are not re-evaluated after a change: natural ventilation
-pressure stays at the saved value. Treat results as a first estimate and confirm in Ventsim.
+**Independent check.** `Fire` and `Fire2` are the same network with two airway
+resistances changed. Predicting Fire2 from Fire plus those two changes
+(`python bench/predict.py Fire.vsm Fire2.vsm`) reproduces 96.9 % of the airflow change
+Ventsim computed; the remaining error is 0.03 % of total flow.
+
+Heat, density and fire effects are not re-evaluated after a change. Treat results as an
+estimate and confirm in Ventsim.
 
 ## Limits
 
 - Read-only on results: simulation, heat and fire modelling stay in Ventsim.
 - Editing is limited to text fields; geometry edits would leave results stale.
-- Tested on the example models shipped with Ventsim DESIGN 6 (up to 5,200 airways). Other versions untested.
+- Tested on the 20 example models shipped with Ventsim DESIGN 6 (up to 6,700 airways). Other versions untested.
 
 ## Development
 

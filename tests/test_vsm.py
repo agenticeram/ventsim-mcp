@@ -106,3 +106,40 @@ def test_solver_fixed_flow_stays_fixed(tmp_path):
     p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
     r = server.what_if(str(p), resistance_scale={"2": 5.0})
     assert r["baseline_fit"]["mean_rel_error"] == 0 and r["airways_changed"] == 0
+
+
+def _stage_model(tmp_path):
+    """Y-junction where airway 3 exists twice: stage bit 0 (flow 10) and bit 1 (flow 30).
+    Saved flows balance only for stage 1 (bit 1): 50 in = 20 + 30 out."""
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    spec = [("1", (0, 0), (1, 0), "50", "3"), ("2", (1, 0), (2, 0), "20", "3"),
+            ("3", (1, 0), (2, 1), "10", "1"), ("4", (1, 0), (2, 1), "30", "2")]
+    for uid, p1, p2, q, stage in spec:
+        d = dict.fromkeys(COLS, "")
+        d.update({"MAIN": uid, "Unique No": uid, "X1": str(p1[0]), "Y1": str(p1[1]), "Z1": "0",
+                  "X2": str(p2[0]), "Y2": str(p2[1]), "Z2": "0", "Quantity": q, "Stage": stage,
+                  "Fan Type": "0", "Fan Numbers": "1", "Resistance Total": "0.01"})
+        lines.append("\t".join(d[c] for c in COLS))
+    p = tmp_path / "st.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
+    return str(p)
+
+
+def test_active_stage_picks_balanced_stage(tmp_path):
+    m = vsm.parse(_stage_model(tmp_path))
+    assert vsm.active_stage(m) == 1
+    assert vsm.active_mask(m) == [True, True, False, True]
+    assert server.check_flow_balance(str(m.path))["unbalanced"] == 0
+
+
+def test_close_points_are_one_node(tmp_path):
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    for uid, x1, x2 in (("1", "0", "10"), ("2", "10.007", "20")):
+        d = dict.fromkeys(COLS, "")
+        d.update({"MAIN": uid, "Unique No": uid, "X1": x1, "Y1": "0", "Z1": "0", "X2": x2,
+                  "Y2": "0", "Z2": "0", "Quantity": "5", "Fan Type": "0"})
+        lines.append("\t".join(d[c] for c in COLS))
+    p = tmp_path / "n.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
+    ends = vsm.node_ids(vsm.parse(str(p)))
+    assert ends[0][1] == ends[1][0]
