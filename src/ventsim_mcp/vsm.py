@@ -45,6 +45,8 @@ class Model:
             yield self.lines[i].split("\t")
 
     def value(self, row: list[str], name: str) -> str:
+        if name == "Unique No" and "Unique No" not in self._col:
+            return row[0]  # older files: the running row number identifies the airway
         i = self._col.get(name)
         return row[i] if i is not None and i < len(row) else ""
 
@@ -94,7 +96,7 @@ def parse(path: str) -> Model:
     path = os.path.abspath(path)
     lines = read_lines(path)
     header = next(
-        (i for i, l in enumerate(lines) if l.startswith("MAIN\tUnique No\t")), None
+        (i for i, l in enumerate(lines) if l.startswith("MAIN\t") and l.count("\t") > 10), None
     )
     if header is None:
         raise ValueError("not a Ventsim model: airway table header not found")

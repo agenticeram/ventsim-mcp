@@ -54,11 +54,18 @@ The CSV/NBC/XLSX exports are headerless or derived dumps of the same tables and 
 
 `what_if` solves node pressures with the resistances and fan curves stored in the file
 (`dP = R*Q|Q| - Ps(Q)`; the stored resistance and pressures match this relation exactly).
-It reports changes relative to an unmodified solve of the same model, and returns a
-`baseline_fit` so you can see how well it reproduces Ventsim's own saved flows. On
-DemoMine the mean error is 4.4 % (max 7.9 m3/s). It does not model fixed-flow airways,
-fires, heat or natural ventilation pressure: on the Tutorial1 and Fire examples the
-baseline is off by 20-90 %, and the tool tells you so. Treat results as a first estimate.
+It honours fan speed (affinity laws), fixed-flow airways and fixed-pressure airways, and
+reports changes relative to an unmodified solve of the same model, together with a
+`baseline_fit` showing how well the solver reproduces Ventsim's own saved flows.
+
+| Example model | Mean flow error vs. saved results |
+|---|---|
+| Tutorial1 | 0 % |
+| DemoMine | 1.6 % (max 0.55 m3/s) |
+| Fire | not usable (fire, fixed-pressure airways) |
+
+Not modelled: fires, heat and natural ventilation pressure, regulators set by flow. Treat
+results as a first estimate and confirm in Ventsim.
 
 ## Limits
 
