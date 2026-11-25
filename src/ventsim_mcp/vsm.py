@@ -167,7 +167,9 @@ def airway(model: Model, row: list[str]) -> dict:
                 d[name] = None
     area = d.get("Area") or 0
     q = d.get("Quantity") or 0
-    names = model.__dict__.setdefault("_fan_names", fan_types(model))
+    names = model.__dict__.get("_fan_names")
+    if names is None:  # scanning the FANS section per airway made large models slow
+        names = model.__dict__["_fan_names"] = fan_types(model)
     d["Fan Name"] = names.get(d["Fan Type"], "") if d["Fan Type"] not in ("", "0") else ""
     d["Velocity m/s"] = round(abs(q) / area, 3) if area else None
     return d
@@ -193,6 +195,12 @@ def fans(model: Model) -> list[dict]:
 
 def summary(model: Model) -> dict:
     ws = airways(model)
+    note = None
+    if not ws:
+        ref = sum(1 for l in model.lines if l[:1].isdigit()) if "REFERENCE" in model.lines else 0
+        note = ("the airway table is empty" + (
+            "; the file holds only reference graphics (e.g. imported CAD lines) that Ventsim "
+            "has not converted to airways" if ref else ""))
     total_len = sum(w["Length"] or 0 for w in ws)
     return {
         "file": model.path,
@@ -209,6 +217,7 @@ def summary(model: Model) -> dict:
         "simulated_stage": stage_name(model, active_stage(model)) or None,
         "airways_in_simulated_stage": sum(active_mask(model)),
         "units": "SI (m, m3/s, Pa, kW) as stored in file",
+        **({"note": note} if note else {}),
     }
 
 
