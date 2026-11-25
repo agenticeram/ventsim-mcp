@@ -99,6 +99,11 @@ estimate and confirm in Ventsim.
 - Editing is limited to text fields; geometry edits would leave results stale.
 - Tested on the 20 example models shipped with Ventsim DESIGN 6 (up to 6,700 airways). Other versions untested.
 
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Questions and ideas go to
+[Discussions](https://github.com/agenticeram/ventsim-mcp/discussions).
+
 ## Development
 
 ```
