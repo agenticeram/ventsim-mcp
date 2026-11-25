@@ -28,7 +28,9 @@ the file.
 | `fan_summary` | Fans by model with total `Fan Power` as stored in the file (kW) |
 | `compare_models` | Diff two saved versions: added/removed airways, airflow and pressure changes |
 | `check_flow_balance` | Airflow mass balance at every junction (finds un-simulated or broken networks) |
-| `what_if` | Experimental: re-solve the network after scaling airway resistance or switching fans off, report airflow changes |
+| `what_if` | Experimental: re-solve the network after scaling airway resistance, switching fans off or changing fan speed, report airflow changes |
+| `size_regulator` | Experimental: resistance, pressure drop and approximate opening area of a regulator that brings one airway to a target airflow |
+| `trace_airflow` | Main airflow path through an airway from intake to exhaust, with length and frictional pressure along it |
 | `export_csv` | Airways to CSV, any columns |
 | `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name |
 

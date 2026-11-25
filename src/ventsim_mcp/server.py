@@ -194,10 +194,12 @@ def compare_models(path_a: str, path_b: str, min_change: float = 0.1, limit: int
 
 @mcp.tool()
 def what_if(path: str, resistance_scale: dict[str, float] | None = None,
-            fans_off: list[str] | None = None, limit: int = 30) -> dict:
+            fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
+            limit: int = 30) -> dict:
     """EXPERIMENTAL what-if airflow estimate. Re-solves the network with the stored fan
     curves and resistances, scaling resistance of given airways (Unique No -> factor, e.g.
-    {"12": 50} for a new door) and/or switching fans off (list of Unique No), and returns
+    {"12": 50} for a new door), switching fans off (list of Unique No) and/or changing fan
+    speed (Unique No -> speed in %, e.g. {"6": 90}; affinity laws), and returns
     the airflow change per airway relative to an unmodified solve of the same model.
     'baseline_fit' tells you how well the solver reproduces the flows saved by Ventsim
     (mean_rel_error = total absolute flow error / total flow). If 'reliable' is false, or
@@ -205,7 +207,8 @@ def what_if(path: str, resistance_scale: dict[str, float] | None = None,
     see), do not trust the numbers. Always confirm in Ventsim."""
     m = _load(path)
     base = solver.solve(m)
-    mod = solver.solve(m, resistance_scale or {}, set(fans_off or []))
+    mod = solver.solve(m, resistance_scale or {}, set(fans_off or []),
+                       fan_speed={str(k): float(v) for k, v in (fan_speed or {}).items()})
     act = [r for r, k in zip(m.rows(), vsm.active_mask(m)) if k]
     stored = [m.num(r, "Quantity") for r in act]
     names = [m.value(r, "Branch Name") for r in act]
@@ -225,6 +228,116 @@ def what_if(path: str, resistance_scale: dict[str, float] | None = None,
                              "junctions_unbalanced_in_saved_flows": check_flow_balance(path)["unbalanced"],
                              "reliable": bool(mod["residual"] < 0.05 and rel and rel[0] < 0.05)},
             "airways_changed": len(out), "largest_changes": out[:limit]}
+
+
+@mcp.tool()
+def size_regulator(path: str, unique_no: str, target_airflow: float, limit: int = 20) -> dict:
+    """EXPERIMENTAL. Resistance to add in one airway (a regulator, door or damper) so that it
+    carries target_airflow (m3/s), solved with the what_if network model. Returns the added
+    resistance (Ns2/m8), the pressure it drops, an approximate regulator opening area
+    (McPherson: A_o = A / (1 + 0.759 A sqrt(R_add)), standard air) and the airflow changes
+    elsewhere. A target above the airway's present airflow cannot be reached by a
+    regulator; the result then says so."""
+    m = _load(path)
+    uid = str(unique_no)
+    base = solver.solve(m)
+    if uid not in base["uid"]:
+        raise ValueError(f"no airway with Unique No {uid} in the simulated stage")
+    k = base["uid"].index(uid)
+    q0 = abs(float(base["Q"][k]))
+    target = abs(float(target_airflow))
+    R0 = base["branches"][k][2]
+    out = {"Unique No": uid, "present_airflow": round(q0, 3), "target_airflow": round(target, 3)}
+    if target >= q0:
+        out["note"] = "target is not below the present airflow; a regulator can only reduce it"
+        return out
+    # bisection on log(scale): airflow falls monotonically as resistance rises
+    lo, hi, sol = 0.0, 1.0, None
+    while True:
+        r = solver.solve(m, {uid: 10 ** hi})
+        if abs(float(r["Q"][k])) <= target or hi > 9:
+            break
+        lo, hi = hi, hi + 1.0
+    for _ in range(30):
+        mid = 0.5 * (lo + hi)
+        sol = solver.solve(m, {uid: 10 ** mid})
+        qm = abs(float(sol["Q"][k]))
+        if abs(qm - target) <= max(1e-4 * target, 1e-4):
+            break
+        lo, hi = (mid, hi) if qm > target else (lo, mid)
+    scale = 10 ** mid
+    r_add = R0 * (scale - 1.0)
+    q = abs(float(sol["Q"][k]))
+    row = next(r for r in m.rows() if m.value(r, "Unique No") == uid)
+    area = m.num(row, "Area")
+    out.update({
+        "achieved_airflow": round(q, 3),
+        "added_resistance_Ns2m8": round(r_add, 5),
+        "regulator_pressure_drop_pa": round(r_add * q * q, 1),
+        "regulator_open_area_m2": round(area / (1 + 0.759 * area * r_add ** 0.5), 3) if area and r_add > 0 else None,
+        "airway_area_m2": area or None,
+        "converged": sol["residual"] < 0.05,
+    })
+    changes = []
+    for u, b, q2 in zip(base["uid"], base["Q"], sol["Q"]):
+        d = float(q2 - b)
+        if abs(d) > 0.01 and u != uid:
+            changes.append({"Unique No": u, "delta": round(d, 3)})
+    changes.sort(key=lambda x: -abs(x["delta"]))
+    out["other_airways_changed"] = len(changes)
+    out["largest_other_changes"] = changes[:limit]
+    return out
+
+
+@mcp.tool()
+def trace_airflow(path: str, unique_no: str, max_steps: int = 200) -> dict:
+    """Follow the main airflow path through one airway: upstream to where the air enters
+    the mine and downstream to where it leaves, taking at every junction the airway that
+    carries the most air (saved results, simulated stage). Returns the path in flow order
+    with length, airflow and the frictional pressure drop (Pa) of each airway and in total."""
+    m = _load(path)
+    act = [(r, e) for r, e, a in zip(m.rows(), vsm.node_ids(m), vsm.active_mask(m)) if a]
+    ways = []
+    for r, (a, b) in act:
+        q = m.num(r, "Quantity")
+        src, dst = (a, b) if q >= 0 else (b, a)
+        ways.append({"uid": m.value(r, "Unique No"), "name": m.value(r, "Branch Name"),
+                     "from": src, "to": dst, "q": abs(q), "len": m.num(r, "Length"),
+                     "dp": abs(m.num(r, "Pressure Branch")), "fan": m.value(r, "Fan Type") not in ("", "0")})
+    into: dict[int, list] = defaultdict(list)
+    outof: dict[int, list] = defaultdict(list)
+    for w in ways:
+        if w["q"] > 1e-6:
+            into[w["to"]].append(w)
+            outof[w["from"]].append(w)
+    start = next((w for w in ways if w["uid"] == str(unique_no)), None)
+    if start is None:
+        raise ValueError(f"no airway with Unique No {unique_no} in the simulated stage")
+    seen = {start["uid"]}
+    up, node = [], start["from"]
+    for _ in range(max_steps):
+        cand = [w for w in into.get(node, []) if w["uid"] not in seen]
+        if not cand:
+            break
+        w = max(cand, key=lambda w: w["q"])
+        seen.add(w["uid"]); up.append(w); node = w["from"]
+    down, node = [], start["to"]
+    for _ in range(max_steps):
+        cand = [w for w in outof.get(node, []) if w["uid"] not in seen]
+        if not cand:
+            break
+        w = max(cand, key=lambda w: w["q"])
+        seen.add(w["uid"]); down.append(w); node = w["to"]
+    path_ = list(reversed(up)) + [start] + down
+    return {
+        "airways": len(path_),
+        "total_length_m": round(sum(w["len"] for w in path_), 1),
+        "total_friction_pressure_pa": round(sum(w["dp"] for w in path_), 1),
+        "fans_on_path": [w["uid"] for w in path_ if w["fan"]],
+        "path": [{"Unique No": w["uid"], "Branch Name": w["name"], "airflow": round(w["q"], 3),
+                  "length_m": round(w["len"], 1), "pressure_drop_pa": round(w["dp"], 1),
+                  "fan": w["fan"]} for w in path_],
+    }
 
 
 @mcp.tool()
