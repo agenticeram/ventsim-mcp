@@ -141,6 +141,8 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
     key = lambda r, s: tuple(round(model.num(r, f"{c}{s}"), 2) for c in "XYZ")
     ids, nodes = {}, defaultdict(int)
     br = []
+    dens: list[float] = []
+    base: list[tuple] = []  # unmodified resistance and fan curve of each airway
     for r in rows:
         a, b = key(r, 1), key(r, 2)
         for k in (a, b):
@@ -149,7 +151,8 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         uid = model.value(r, "Unique No")
         R = max(model.num(r, "Resistance Total"), 1e-7) * resistance_scale.get(uid, 1.0)
         ft = model.value(r, "Fan Type")
-        raw = curves.get(ft) if ft not in ("", "0") and uid not in fans_off else None
+        raw_all = curves.get(ft) if ft not in ("", "0") else None
+        raw = raw_all if uid not in fans_off else None
         # an airway with a pressure source but no fan curve (fixed-pressure airway): keep
         # the stored pressure rise constant
         pfan = model.num(r, "Pressure Fan")
@@ -160,7 +163,7 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         rho = pa / (287.05 * T) if T > 200 and pa > 5e4 else 1.2
         n = max(model.num(r, "Fan Numbers", 1.0), 1.0)
         gain, eq_total = 1.0, False
-        if raw is not None:
+        if raw_all is not None:
             # Some fan types apply total pressure in the airway equation, others static.
             # Decide from the saved results of this airway; if total, scale the static
             # curve by the saved total/static ratio (smooth and monotone, unlike adding
@@ -170,11 +173,19 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             rq = model.num(r, "Resistance Total") * q_s * abs(q_s)
             if q_s and pf > st and abs(dp_s - (rq - pf)) < abs(dp_s - (rq - st)):
                 eq_total = True
-                gain = 1.0 if raw["total"] or st <= 1 else pf / st
+                gain = 1.0 if raw_all["total"] or st <= 1 else pf / st
         curve = _scaled(raw, speed, const, rho, gain, eq_total)
+        pfan_c = pfan if raw_all is None and pfan else None
+        base.append((R / resistance_scale.get(uid, 1.0), _scaled(raw_all, speed, pfan_c, rho, gain, eq_total)))
         qf = model.num(r, "QuantityFix")
         qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.001 * abs(qf) else None
+        if model.value(r, "Resistance Type") == "1" and uid not in resistance_scale:
+            qfix = 0.0  # closed airway (stopping/sealed): carries no air
         nvp = model.num(r, "Calc NVP Pressure") if use_nvp else 0.0
+        # Ventsim conserves mass, not volume: air heated or compressed along the way changes
+        # volume. Keep each airway's saved density and balance mass flow at the nodes.
+        q_s, mf = model.num(r, "Quantity"), model.num(r, "Dry Massflow")
+        dens.append(mf / q_s if q_s and mf and 0.3 < mf / q_s < 3 else rho)
         br.append((ids[a], ids[b], R, curve, n, uid, a, b, r, qfix, nvp))
     N = len(ids)
     M = len(br)
@@ -185,6 +196,19 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             P[node] = model.num(r, col)  # start from the pressures saved by Ventsim
             if nodes[k] == 1:
                 fixed[node] = True
+    # A boundary node (portal, dead end) is held at the pressure that makes its airway
+    # carry the saved flow: saved boundary pressures are sometimes reported on another
+    # datum (elevation, surface reference) than the interior ones.
+    for (i, j, R, c, n, uid, a, b, r, qf, nv), (R0, c0) in zip(br, base):
+        ea, eb = nodes[a] == 1, nodes[b] == 1
+        if ea == eb or qf is not None:
+            continue
+        q = model.num(r, "Quantity")
+        drop = R0 * q * abs(q) - (c0(q / n)[0] if c0 else 0.0) - nv  # = P_i - P_j
+        if ea:
+            P[i] = P[j] + drop
+        else:
+            P[j] = P[i] - drop
     free = np.where(~fixed)[0]
     pos = -np.ones(N, int)
     pos[free] = np.arange(len(free))
@@ -192,6 +216,7 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
     J = np.array([x[1] for x in br], dtype=int)
     Rv = np.array([x[2] for x in br])
     NV = np.array([x[10] for x in br])
+    RHO = np.array(dens) if dens else np.zeros(0)
     plain = np.array([x[3] is None and x[9] is None for x in br])
     special = [k for k in range(M) if not plain[k]]
 
@@ -203,8 +228,9 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         for k in special:
             _i, _j, R, c, n, _u, _a, _b, _r, qf, _nv = br[k]
             Q[k], G[k] = _flow(dp[k], R, c, n, qf)
-        imb = np.bincount(J, weights=Q, minlength=N) - np.bincount(I, weights=Q, minlength=N)
-        return Q, G, imb
+        Mf = Q * RHO
+        imb = np.bincount(J, weights=Mf, minlength=N) - np.bincount(I, weights=Mf, minlength=N)
+        return Q, G * RHO, imb
 
     def jacobian(G):
         rows, cols, vals = [], [], []
@@ -221,7 +247,7 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
     it = 0
     for it in range(iterations):
         # imb[i] = inflow - outflow at i; Newton step solves  L dP = imb  on free nodes
-        if len(free) == 0 or np.max(np.abs(imb[free])) < tol:
+        if len(free) == 0 or np.max(np.abs(imb[free])) < tol * 1.2:
             break
         A = jacobian(G)
         step = spsolve(A, imb[free])
@@ -237,5 +263,5 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
                 break
             alpha *= 0.5
         P, Q, G, imb = Pn, Qn, Gn, imbn
-    return {"uid": [b[5] for b in br], "Q": Q, "iterations": it + 1,
-            "residual": float(np.max(np.abs(imb[free]))) if len(free) else 0.0}
+    return {"uid": [b[5] for b in br], "Q": Q, "P": P, "branches": br, "iterations": it + 1,
+            "residual": float(np.max(np.abs(imb[free]))) / 1.2 if len(free) else 0.0}
