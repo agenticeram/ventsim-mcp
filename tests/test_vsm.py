@@ -8,7 +8,7 @@ from ventsim_mcp import server, vsm
 COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node", "Exit Node",
         "Notes", "Group", "X1", "Y1", "Z1", "X2", "Y2", "Z2", "Width", "Height", "Area",
         "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage",
-        "Resistance Total", "Pressure From", "Pressure To"]
+        "Resistance Total", "Pressure From", "Pressure To", "QuantityFix"]
 
 
 def _row(i, name, p1, p2, q, fan="0"):
@@ -91,3 +91,18 @@ def test_solver_series_what_if(tmp_path):
     assert r["baseline_fit"]["mean_rel_error"] < 0.01
     # series R 0.2 -> sqrt(1000/0.2)=70.7; after scaling R = 0.3 -> 57.7
     assert abs(r["largest_changes"][0]["delta"] + 13.0) < 0.1
+
+
+def test_solver_fixed_flow_stays_fixed(tmp_path):
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    for i, (a, b, pf, pt) in enumerate([(0, 1, "1000", "0"), (1, 2, "0", "0")], start=1):
+        d = dict.fromkeys(COLS, "")
+        d.update({"MAIN": str(i), "Unique No": str(i), "X1": str(a), "Y1": "0", "Z1": "0",
+                  "X2": str(b), "Y2": "0", "Z2": "0", "Quantity": "50", "QuantityFix": "50",
+                  "Resistance Total": "0.1", "Pressure From": pf, "Pressure To": pt,
+                  "Fan Type": "0", "Fan Numbers": "1"})
+        lines.append("\t".join(d[c] for c in COLS))
+    p = tmp_path / "f.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
+    r = server.what_if(str(p), resistance_scale={"2": 5.0})
+    assert r["baseline_fit"]["mean_rel_error"] == 0 and r["airways_changed"] == 0
