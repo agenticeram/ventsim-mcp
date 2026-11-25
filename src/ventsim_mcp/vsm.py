@@ -203,3 +203,34 @@ def summary(model: Model) -> dict:
         "has_simulation_results": any((w["Quantity"] or 0) for w in ws),
         "units": "SI (m, m3/s, Pa, kW) as stored in file",
     }
+
+
+def node_ids(model: Model, tolerance: float = 0.05) -> list[tuple[int, int]]:
+    """(entry node, exit node) index per airway. Ends closer than ``tolerance`` metres are
+    the same junction (Ventsim stores coordinates with small rounding differences)."""
+    pts = []
+    for r in model.rows():
+        for s in "12":
+            pts.append(tuple(model.num(r, f"{c}{s}") for c in "XYZ"))
+    parent = list(range(len(pts)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    cell: dict[tuple, list[int]] = {}
+    for k, p in enumerate(pts):
+        g = tuple(int(v // tolerance) for v in p)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for o in cell.get((g[0] + dx, g[1] + dy, g[2] + dz), ()):
+                        q = pts[o]
+                        if (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2 <= tolerance ** 2:
+                            parent[find(k)] = find(o)
+        cell.setdefault(g, []).append(k)
+    roots: dict[int, int] = {}
+    ids = [roots.setdefault(find(k), len(roots)) for k in range(len(pts))]
+    return [(ids[2 * n], ids[2 * n + 1]) for n in range(len(pts) // 2)]

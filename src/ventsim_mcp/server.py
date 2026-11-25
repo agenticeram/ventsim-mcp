@@ -79,24 +79,31 @@ def list_fans(path: str) -> list[dict]:
 
 @mcp.tool()
 def check_flow_balance(path: str, tolerance: float = 0.5, limit: int = 30) -> dict:
-    """Mass-balance check of simulated airflow (m3/s) at every junction.
+    """Mass-balance check of simulated airflow at every junction (mass flow expressed as
+    m3/s of standard 1.2 kg/m3 air when the file has it, else volume flow).
 
     Junctions are found by matching airway end coordinates. Nodes touched by a single
     airway (portals, dead ends) are skipped. A large imbalance usually means the model
     needs to be re-simulated, contains recirculation fans, or has disconnected nodes."""
     m = _load(path)
-    net: dict[tuple, float] = defaultdict(float)
-    deg: dict[tuple, int] = defaultdict(int)
-    for r in m.rows():
-        a = tuple(round(m.num(r, c), 2) for c in ("X1", "Y1", "Z1"))
-        b = tuple(round(m.num(r, c), 2) for c in ("X2", "Y2", "Z2"))
+    net: dict[int, float] = defaultdict(float)
+    deg: dict[int, int] = defaultdict(int)
+    where: dict[int, tuple] = {}
+    # balance mass flow where Ventsim saved it (heated air expands), else volume
+    use_mass = any(m.num(r, "Dry Massflow") for r in m.rows())
+    for r, (a, b) in zip(m.rows(), vsm.node_ids(m)):
         q = m.num(r, "Quantity")
+        if use_mass:
+            q = m.num(r, "Dry Massflow") / 1.2 * (1 if q >= 0 else -1)
         net[a] -= q  # leaves node a
         net[b] += q  # arrives at node b
         deg[a] += 1
         deg[b] += 1
+        where.setdefault(a, tuple(round(m.num(r, c), 2) for c in ("X1", "Y1", "Z1")))
+        where.setdefault(b, tuple(round(m.num(r, c), 2) for c in ("X2", "Y2", "Z2")))
     bad = [
-        {"x": k[0], "y": k[1], "z": k[2], "imbalance_m3s": round(v, 3), "airways": deg[k]}
+        {"x": where[k][0], "y": where[k][1], "z": where[k][2], "imbalance_m3s": round(v, 3),
+         "airways": deg[k]}
         for k, v in net.items()
         if deg[k] > 1 and abs(v) > tolerance
     ]

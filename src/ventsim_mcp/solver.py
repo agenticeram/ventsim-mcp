@@ -138,18 +138,23 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
     fans_off = fans_off or set()
     curves = _curve(model)
     rows = list(model.rows())
-    key = lambda r, s: tuple(round(model.num(r, f"{c}{s}"), 2) for c in "XYZ")
-    ids, nodes = {}, defaultdict(int)
+    ends = vsm.node_ids(model)
+    nodes: dict[int, int] = defaultdict(int)
     br = []
     dens: list[float] = []
     base: list[tuple] = []  # unmodified resistance and fan curve of each airway
-    for r in rows:
-        a, b = key(r, 1), key(r, 2)
+    for r, (a, b) in zip(rows, ends):
         for k in (a, b):
-            ids.setdefault(k, len(ids))
             nodes[k] += 1
         uid = model.value(r, "Unique No")
-        R = max(model.num(r, "Resistance Total"), 1e-7) * resistance_scale.get(uid, 1.0)
+        R = max(model.num(r, "Resistance Total"), 1e-7)
+        q_saved = model.num(r, "Quantity")
+        pb = model.num(r, "Pressure Branch")
+        if abs(q_saved) > 1e-3 and pb and -pb / (q_saved * abs(q_saved)) > 0:
+            # effective resistance including fittings, dampers and orifices: Ventsim saves
+            # the frictional/shock pressure drop as 'Pressure Branch' (= -R_eff*Q|Q|)
+            R = max(-pb / (q_saved * abs(q_saved)), 1e-7)
+        R *= resistance_scale.get(uid, 1.0)
         ft = model.value(r, "Fan Type")
         raw_all = curves.get(ft) if ft not in ("", "0") else None
         raw = raw_all if uid not in fans_off else None
@@ -174,20 +179,33 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             if q_s and pf > st and abs(dp_s - (rq - pf)) < abs(dp_s - (rq - st)):
                 eq_total = True
                 gain = 1.0 if raw_all["total"] or st <= 1 else pf / st
+        if raw_all is not None and q_saved:
+            # calibrate the curve so it passes through the saved duty point (covers
+            # speed control, blade settings and pressure definitions the file does not
+            # spell out); the curve shape is kept for what-if changes
+            f0 = _scaled(raw_all, speed, None, rho, gain, eq_total)
+            need = (R / resistance_scale.get(uid, 1.0)) * q_saved * abs(q_saved) - (
+                model.num(r, "Pressure From") - model.num(r, "Pressure To")
+                + (model.num(r, "Calc NVP Pressure") if use_nvp else 0.0))
+            have = f0(q_saved / n)[0]
+            if have > 1 and need > 0:
+                gain *= min(max(need / have, 0.2), 5.0)
         curve = _scaled(raw, speed, const, rho, gain, eq_total)
         pfan_c = pfan if raw_all is None and pfan else None
         base.append((R / resistance_scale.get(uid, 1.0), _scaled(raw_all, speed, pfan_c, rho, gain, eq_total)))
         qf = model.num(r, "QuantityFix")
         qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.001 * abs(qf) else None
-        if model.value(r, "Resistance Type") == "1" and uid not in resistance_scale:
+        dp_saved = model.num(r, "Pressure From") - model.num(r, "Pressure To")
+        closed = model.value(r, "Resistance Type") == "1" or (abs(q_saved) < 1e-6 and abs(dp_saved) > 0.01)
+        if closed and uid not in resistance_scale:
             qfix = 0.0  # closed airway (stopping/sealed): carries no air
         nvp = model.num(r, "Calc NVP Pressure") if use_nvp else 0.0
         # Ventsim conserves mass, not volume: air heated or compressed along the way changes
         # volume. Keep each airway's saved density and balance mass flow at the nodes.
         q_s, mf = model.num(r, "Quantity"), model.num(r, "Dry Massflow")
         dens.append(mf / q_s if q_s and mf and 0.3 < mf / q_s < 3 else rho)
-        br.append((ids[a], ids[b], R, curve, n, uid, a, b, r, qfix, nvp))
-    N = len(ids)
+        br.append((a, b, R, curve, n, uid, a, b, r, qfix, nvp))
+    N = (max(max(e) for e in ends) + 1) if ends else 0
     M = len(br)
     P = np.zeros(N)
     fixed = np.zeros(N, bool)
