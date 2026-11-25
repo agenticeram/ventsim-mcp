@@ -26,6 +26,7 @@ def model_path(tmp_path):
              _row(1, "Decline", ("0", "0", "0"), ("100", "0", "0"), "50", fan="1"),
              _row(2, "Left", ("100", "0", "0"), ("200", "0", "0"), "30"),
              _row(3, "Right", ("100", "0", "0"), ("200", "50", "0"), "30"),  # 60 out, 50 in
+             "FANS", "1\tTest Fan\t2.8", "0\t2100\t0", "END\tFANS",
              "ROLLBACK\tx", "ENDFILE"]
     p = tmp_path / "t.vsm"
     p.write_bytes(gzip.compress("\r\n".join(lines).encode("latin-1")))
