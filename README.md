@@ -1,5 +1,7 @@
 # ventsim-mcp
 
+<!-- mcp-name: io.github.agenticeram/ventsim-mcp -->
+
 An [MCP](https://modelcontextprotocol.io) server that lets AI assistants read and inspect
 **Ventsim** mine ventilation models (`.vsm` files).
 
@@ -32,7 +34,8 @@ All values are in the SI units Ventsim stores internally (m, m3/s, Pa, kW).
 ## Install
 
 ```
-pip install git+https://github.com/agenticeram/ventsim-mcp
+pip install ventsim-mcp
+# or the latest code: pip install git+https://github.com/agenticeram/ventsim-mcp
 ```
 
 Claude Desktop / Claude Code config:
