@@ -230,7 +230,13 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
         pfan_c = pfan if raw_all is None and pfan and not off_in_file else None
         base.append((R / resistance_scale.get(uid, 1.0), _scaled(raw_all, speed, pfan_c, rho, gain, eq_total)))
         qf = model.num(r, "QuantityFix")
-        qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.001 * abs(qf) else None
+        if "Branch Flags" in model.columns:
+            # Ventsim's own switch: a QuantityFix is in force only with its Branch Flags bit.
+            # (A saved flow that happens to equal QuantityFix, e.g. a fan airway, is not one.)
+            qfix = qf if qf and _branch_flags(model, r) & QFIX_MASK else None
+        else:
+            # older layouts without Branch Flags: fall back to the saved flow matching QuantityFix
+            qfix = qf if qf and abs(qf - model.num(r, "Quantity")) <= 0.001 * abs(qf) else None
         dp_saved = model.num(r, "Pressure From") - model.num(r, "Pressure To")
         closed = model.value(r, "Resistance Type") == "1" or (abs(q_saved) < 1e-6 and abs(dp_saved) > 0.01)
         if closed and uid not in resistance_scale:
@@ -409,6 +415,13 @@ SURFACE_FLAGS = (1 << 12, 1 << 13)  # 'Branch Flags' bits: entry / exit end open
 PRESSURE_FIX_FLAG = 1 << 19  # 'Pressure Fix' is only applied when this bit is set
 TOTAL_AS_IS = True  # total-pressure curves act as total pressure (no outlet loss)
 QFIX_MASK = (1 << 2) | (1 << 4)  # Branch Flags bits that switch a QuantityFix on
+
+
+def _branch_flags(model: vsm.Model, r: list[str]) -> int:
+    try:
+        return int(float(model.value(r, "Branch Flags") or 0))
+    except ValueError:
+        return 0
 
 
 def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,

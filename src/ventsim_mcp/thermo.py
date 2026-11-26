@@ -271,3 +271,53 @@ def arrival_times(model: vsm.Model, sources: list[str], flow: dict[str, float] |
                 heapq.heappush(h, (x + t, v))
     return {uid: {"arrive_s": T[u], "leave_s": T[u] + t} for uid, (u, v, t) in info.items()
             if u in T}
+
+
+def temperatures_with_rock(model: vsm.Model, flow: dict[str, float] | None = None,
+                           extra_heat_kw: dict[str, float] | None = None,
+                           surface_temp: float | None = None,
+                           extra_latent_kw: dict[str, float] | None = None,
+                           rock_temp: float | None = None, iterations: int = 6,
+                           tol: float = 0.01) -> dict[str, dict]:
+    """``temperatures`` plus the change of rock-to-air heat with airflow and air temperature
+    (see rock.py). The rock term is the difference from the saved state, so an unchanged
+    model is returned exactly as ``temperatures`` gives it. Airways with no rock temperature
+    (no 'Rock VRT' and no ``rock_temp``) get no change. Iterated because the air temperature
+    the rock sees depends on the heat it adds."""
+    from . import rock
+
+    from . import rock
+
+    net, _N = _network(model, flow)
+    extra = dict(extra_heat_kw or {})
+    # the saved state: the air temperatures the saved heat corresponds to (saved airflow,
+    # no extra sources). The rock change is measured from it.
+    base = temperatures(model, None, None, surface_temp, None)
+    rows = {}
+    for r, uid, _a, _b, q in net:
+        t_r = rock.rock_temperature(model, r, rock_temp)
+        if t_r is None or uid not in base:
+            continue
+        rows[uid] = (r, q, t_r, _density(model, r), base[uid])
+    if not rows:
+        return temperatures(model, flow, extra_heat_kw, surface_temp, extra_latent_kw)
+    t_air = {uid: (v[4]["t_in"] + v[4]["t_out"]) / 2.0 for uid, v in rows.items()}
+    res = None
+    for _ in range(iterations):
+        merged = dict(extra)
+        for uid, (r, q, t_r, rho, b) in rows.items():
+            t_s = (b["t_in"] + b["t_out"]) / 2.0
+            change = rock.rock_heat_change_kw(
+                model, r, q, rho, t_air[uid], model.num(r, "Quantity"), rho, t_s, t_r)
+            merged[uid] = merged.get(uid, 0.0) + change
+        res = temperatures(model, flow, merged, surface_temp, extra_latent_kw)
+        delta = 0.0
+        for uid in rows:
+            if uid not in res:
+                continue
+            new = (res[uid]["t_in"] + res[uid]["t_out"]) / 2.0
+            delta = max(delta, abs(new - t_air[uid]))
+            t_air[uid] = new
+        if delta < tol:
+            break
+    return res

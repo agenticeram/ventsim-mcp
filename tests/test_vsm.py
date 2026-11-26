@@ -102,7 +102,8 @@ def test_solver_fixed_flow_stays_fixed(tmp_path):
         d.update({"MAIN": str(i), "Unique No": str(i), "X1": str(a), "Y1": "0", "Z1": "0",
                   "X2": str(b), "Y2": "0", "Z2": "0", "Quantity": "50", "QuantityFix": "50",
                   "Resistance Total": "0.1", "Pressure From": pf, "Pressure To": pt,
-                  "Fan Type": "0", "Fan Numbers": "1"})
+                  "Fan Type": "0", "Fan Numbers": "1",
+                  "Branch Flags": "4"})  # QuantityFix switched on
         lines.append("\t".join(d[c] for c in COLS))
     p = tmp_path / "f.vsm"
     p.write_bytes(gzip.compress("\r\n".join(lines + ["ENDFILE"]).encode("latin-1")))
@@ -515,3 +516,25 @@ def test_compressible_matches_ventsim():
     assert err(sv.simulate(ma, compressible=True)) < 0.01
     assert err(sv.simulate(ma)) > 0.03
     assert err(sv.solve(mb, compressible=True)) < 0.001
+
+
+def test_tutorial2_fan_speed_changes_airflow():
+    """Regression: a fan airway whose saved flow equals its QuantityFix (no Branch Flags bit)
+    must follow its fan curve; Tutorial2's surface fan used to be frozen at 115.8 m3/s."""
+    import os
+
+    ex = os.path.join(os.environ.get("VENTSIM_EXAMPLES", r"C:\Program Files\Ventsim DESIGN 6\examples"), "Tutorial2.vsm")
+    if not os.path.exists(ex):
+        pytest.skip("Ventsim examples not installed")
+    m = vsm.parse(ex)
+    q = {sp: dict(zip(s["uid"], map(float, s["Q"])))["6"]
+         for sp in (100.0, 50.0) for s in [solver.solve(m, fan_speed={"6": sp}, iterations=200)]}
+    assert q[50.0] < q[100.0] - 10
+
+
+def test_edit_fixed_flow_holds_airflow(model_path, tmp_path):
+    out = str(tmp_path / "fixed.vsm")
+    server.edit_airways(model_path, out, [{"unique_no": "2", "field": "Fixed Flow", "value": "7.5"}])
+    s = solver.solve(vsm.parse(out))
+    q = dict(zip(s["uid"], map(float, s["Q"])))
+    assert abs(q["2"] - 7.5) < 1e-6
