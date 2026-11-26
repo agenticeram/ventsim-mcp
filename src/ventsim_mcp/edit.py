@@ -87,7 +87,23 @@ def set_geometry(model: vsm.Model, cells: list[str], **new: float) -> dict:
                     ("Length", L), ("kFactor", k)):
         if name in new or name in ("Area", "Perimeter") and ("Width" in new or "Height" in new):
             _set(model, cells, name, _fmt(v))
+    # Ventsim recomputes an AUTO resistance (type 0) from size, friction preset and the
+    # length between the end coordinates when it simulates. A friction factor is kept only
+    # as a custom value (kFactor type -1), and a length that differs from the coordinates
+    # only through a custom resistance (type -1). Checked in Ventsim 6.0.5.
+    if "kFactor" in new:
+        _set(model, cells, "kFactor type", "-1")
+    if "Length" in new and not closed:
+        set_custom_resistance(model, cells, r)
     return {"resistance_before": r0, "resistance_after": r, "closed": closed}
+
+
+def set_custom_resistance(model: vsm.Model, cells: list[str], r: float) -> None:
+    """Store ``r`` as the airway's custom resistance (Ventsim keeps a custom value when it
+    simulates; an AUTO one it recomputes from the airway size and friction)."""
+    _set(model, cells, "Resistance Type", "-1")
+    _set(model, cells, "Resistance", _fmt(r))
+    _set(model, cells, "Resistance Total", _fmt(r))
 
 
 def _existing_ends(model: vsm.Model) -> list[tuple[tuple[float, float, float], bool, str]]:

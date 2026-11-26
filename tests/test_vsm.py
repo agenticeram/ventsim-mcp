@@ -10,7 +10,7 @@ COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node",
         "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage",
         "Resistance Total", "Pressure From", "Pressure To", "QuantityFix", "Fan Speed", "Fan Off",
         "Shape Type", "Branch Flags", "Calc Sensible", "Dry Massflow", "db air In", "db air out",
-        "Base Injection", "Base Concentration", "Resistance Type"]
+        "Base Injection", "Base Concentration", "Resistance Type", "Pathways"]
 
 
 def _row(i, name, p1, p2, q, fan="0"):
@@ -394,3 +394,83 @@ def test_diesel_exhaust_and_closed_resistance(tmp_path):
     with pytest.raises(TypeError):
         server.diesel_exhaust(p)  # emission factor must be given
     assert server.diesel_exhaust(p, 0.1)["engines"] == []
+
+
+def _with_twin(tmp_path):
+    """The fan loop with a second airway drawn on top of airway 2 (a duplicate)."""
+    import ventsim_mcp.vsm as v
+    p = _fan_loop(tmp_path)
+    m = v.parse(p)
+    cells = m.row(1)
+    cells[0] = "3"
+    cells[m.col("Unique No")] = "3"
+    m.lines.insert(m.row_indexes[-1] + 1, "	".join(cells))
+    out = str(tmp_path / "twin.vsm")
+    v.dump(m, out)
+    return out
+
+
+def test_model_check_and_fix_duplicates(tmp_path):
+    p = _with_twin(tmp_path)
+    c = server.model_check(p)
+    assert c["warnings"] == {"duplicate": 1} and set(c["duplicate"][0]["Unique No"]) == {"2", "3"}
+    out = str(tmp_path / "fixed.vsm")
+    r = server.fix_model(p, out)
+    assert r["changed"]["merged"] == [{"kept": "2", "removed": ["3"], "Pathways": 2}]
+    assert r["after"] == {}
+    import ventsim_mcp.vsm as v
+    g = v.parse(out)
+    assert [g.value(x, "Unique No") for x in g.rows()] == ["1", "2"]
+    a = v.airway(g, g.row(1))
+    # two equal airways in parallel: R/4
+    assert abs(float(g.value(g.row(1), "Resistance Total")) - 0.025) < 1e-9
+    assert g.value(g.row(1), "Pathways") == "2" and g.row(1)[0] == "2"
+
+
+def test_pathways_edit(tmp_path):
+    p = _fan_loop(tmp_path)
+    out = str(tmp_path / "par.vsm")
+    server.edit_airways(p, out, [{"unique_no": "2", "field": "Pathways", "value": 2}])
+    import ventsim_mcp.vsm as v
+    g = v.parse(out)
+    assert abs(float(g.value(g.row(1), "Resistance Total")) - 0.025) < 1e-9
+
+
+def test_closing_fan_path_is_reported_and_fixed(tmp_path):
+    p = _fan_loop(tmp_path)
+    out = str(tmp_path / "closed.vsm")
+    msg = server.edit_airways(p, out, [{"unique_no": "2", "field": "Closed", "value": "true"}])
+    assert "fan_blocked: ['1']" in msg
+    fixed = str(tmp_path / "closed_fixed.vsm")
+    r = server.fix_model(out, fixed)
+    assert r["changed"] == {"fan_off": ["1"]} and r["after"] == {}
+
+
+def test_add_airways_refuses_duplicate(tmp_path):
+    """Portal -> 1 -> 2 -> portal; a second airway between the interior junctions 1 and 2
+    would be a duplicate in Ventsim."""
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    for i, (a, b) in enumerate([(0, 1), (1, 2), (2, 3)], 1):
+        d = dict.fromkeys(COLS, "")
+        d.update({"MAIN": str(i), "Unique No": str(i), "X1": str(a), "Y1": "0", "Z1": "0",
+                  "X2": str(b), "Y2": "0", "Z2": "0", "Quantity": "10", "Area": "10",
+                  "Width": "3", "Height": "3.3", "Perimeter": "12.6", "kFactor": "0.01",
+                  "Length": "1", "Resistance Total": "0.1", "Fan Type": "0"})
+        lines.append("\t".join(d[c] for c in COLS))
+    lines += ["ENDFILE"]
+    p = tmp_path / "line.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines).encode("latin-1")))
+    out = tmp_path / "dup.vsm"
+    with pytest.raises(ValueError, match="duplicate"):
+        server.add_airways(str(p), str(out), [{"like": "2", "start": [1, 0, 0], "end": [2, 0, 0]}])
+    assert not out.exists()
+
+
+def test_optimize_fans_meets_required_airflow(tmp_path):
+    """Fan loop: at speed s the airflow Q solves 0.2 Q^2 = 1000 s^2 - 10 s Q. For 39 m3/s
+    the lowest grid speed that delivers it is 80 %."""
+    p = _fan_loop(tmp_path)
+    r = server.optimize_fans_tool(p, ["1"], 50, 100, 5, min_flow={"2": 39.0})
+    assert r["best"] is not None and r["best"]["speeds_pct"] == {"1": 80.0}
+    with pytest.raises(ValueError, match="min_flow"):
+        server.optimize_fans_tool(p, ["1"], 50, 100, 5)
