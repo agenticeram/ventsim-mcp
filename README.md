@@ -208,7 +208,7 @@ it finds exactly the seven airways Ventsim marks as a recirculation loop.
 - `fan_select` reads the fan library in the model (static and total pressure, efficiency,
   power per curve point) and finds the speed at which each fan meets a duty. Checked on the
   running fans of the examples (`python bench/fan_select.py <folder>`): for 99 of 103 fans
-  with a library curve (the other 4 run outside their curve range), the fan's own curve meets its saved duty, at a speed within
+  with a library curve (for the other 4 no speed from 20 to 250 % fits), the fan's own curve meets its saved duty, at a speed within
   1.3 points of the saved `Fan Speed` (6 points where only a total-pressure curve is given).
 - `energy_report` uses the saved fan power.
 - `compliance_check` limits default to common practice values (0.25 - 6 m/s, 20 m/s in
