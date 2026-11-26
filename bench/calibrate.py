@@ -24,3 +24,5 @@ err = sum(abs(abs(q[u]) - abs(mb.num(B[u], "Quantity"))) for u in q)
 print(f"{len(true)} airways changed; measured airflow misfit rms {r['rms_rel_error_before']:.2%} -> "
       f"{r['rms_rel_error_after']:.3%}; recovered factor error median {np.median(fe):.2%}, max "
       f"{max(fe):.1%}; whole-network airflow error vs B {err / tot:.3%}; {time.time() - t:.0f} s")
+for u in sorted(true, key=lambda u: -abs(true[u] - 1))[:3]:
+    print(f"  airway {u}: true factor {true[u]:.3f}, fitted {r['factors'][u]:.3f}")

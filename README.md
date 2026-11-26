@@ -108,7 +108,7 @@ junctions, closed airways, fans); it is not an accuracy figure for changes
 | the other 17 examples (CoalMine 3,403 airways, Blue_sky, Fire, HVAC, ...) | | < 0.01 % |
 
 **Accuracy for changes.** `Fire` and `Fire2` are the same network with two airway
-resistances changed. Predicting Fire2 from Fire plus those two changes
+resistances changed (x2.26 and x1.41; 25 more differ only in the last digits). Predicting Fire2 from Fire plus those changes
 (`python bench/predict.py Fire.vsm Fire2.vsm`) gives an airflow error of 0.03 % of total
 flow; it reproduces 96.7 % of the airflow change Ventsim computed. This is the only such
 pair among the shipped examples, so treat it as one data point.
@@ -189,8 +189,8 @@ to within 0.1 % (`python bench/spread.py <folder>`). InclinedHeatMine's saved sp
 are 1 - 4 % faster than its saved airflow allows, so they look like results of an earlier
 run; HVACDemoB is an HVAC model.
 
-`diesel_exhaust` mixes diesel particulate from the engines in the model (kW x emission
-factor) along the airflow. Ventsim's own saved DPM values do not follow a steady mixing
+`diesel_exhaust` mixes diesel particulate from the engines in the model (kW x an emission
+factor you give, g/kWh) along the airflow. Ventsim's own saved DPM values do not follow a steady mixing
 model (they look time-dependent), so this tool is not checked against Ventsim.
 
 ## Escape routes and recirculation
@@ -200,8 +200,10 @@ shortest walk along airways from the middle of each airway to a surface connecti
 middle of a refuge airway (`Branch Flags2` bit 5); resistances marked impassable in the
 model's resistance table (stoppings, roof falls) cannot be walked. All 3,262 airways of the
 two examples that hold these results match (`python bench/escape.py <folder>`).
-`recirculation_check` finds the strongly connected parts of the directed airflow; in Fire2
-it finds exactly the seven airways Ventsim marks as a recirculation loop.
+`recirculation_check` finds the strongly connected parts of the directed airflow. Its fan
+loop in Fire2 is exactly the seven airways Ventsim marks as recirculation; it also reports
+loops without fans (and large circulating groups in Blue_sky and RealMine) that Ventsim
+does not mark, so read those as "air goes round here", not as Ventsim's recirculation.
 
 ## Design tools
 
@@ -210,18 +212,29 @@ it finds exactly the seven airways Ventsim marks as a recirculation loop.
   running fans of the examples (`python bench/fan_select.py <folder>`): for 99 of 103 fans
   with a library curve (for the other 4 no speed from 20 to 250 % fits), the fan's own curve meets its saved duty, at a speed within
   1.3 points of the saved `Fan Speed` (6 points where only a total-pressure curve is given).
-- `energy_report` uses the saved fan power.
+- `energy_report` uses the saved fan power (Ventsim's `Fan Power` = airflow x fan total
+  pressure / efficiency) and splits the air power over the airways.
 - `compliance_check` limits default to common practice values (0.25 - 6 m/s, 20 m/s in
   shafts, 0.06 m3/s per diesel kW, 28 C wet bulb); they are not any particular regulation,
   so pass the values that apply to you.
 - `calibrate_airflow` fits resistance factors to measured airflows by least squares on the
-  what_if solver. Using Fire2's airflow in the 27 airways whose resistance differs from Fire
-  as "measurements" on Fire (`python bench/calibrate.py Fire.vsm Fire2.vsm`) brings the whole
-  network to within 0.002 % of Fire2's airflow in 8 s. The individual factors are only as
-  well defined as the measurements allow (median 2 % from the true values, airways in series
-  cannot be told apart).
-- `write_results` writes airflow and temperatures into a copy so Ventsim shows them; other
-  saved results are left as they were.
+  what_if solver. Using Fire2's airflow in the 27 airways whose stored resistance differs
+  from Fire as "measurements" on Fire (`python bench/calibrate.py Fire.vsm Fire2.vsm`)
+  brings the whole network to within 0.002 % of Fire2's airflow in 8 s. The resistances
+  themselves are not recovered: the two airways that really changed (x2.26 and x1.41) come
+  out as x1.52 and x1.08, the rest of the change lands on airways in series with them, which
+  the measurements cannot tell apart. Treat the factors as one fit, not as measured values.
+- `write_results` writes airflow, end pressures, airway pressure drop, fan pressure and
+  temperatures into a copy (what_if solver by default). The other tools read such a copy
+  consistently: `what_if` on a written copy reproduces it with 0.00 % error on Fire and
+  CoalMine. Heat terms and gases are left as they were; the copies have not been opened in
+  Ventsim itself yet.
+- `compliance_check` takes the wet bulb Ventsim saved.
+- Stages: `simulate_airflow(stage=...)` solves another stage from its inputs and
+  `escape_routes(stage=...)` checks its escape routes; the other tools use the saved
+  results, which belong to the saved stage.
+- Closing an airway (`edit_airways`, field `Closed`) writes it the way Ventsim stores
+  closed airways in the examples: resistance type 1, resistance 1000.
 
 Leakage: in these examples leakage paths are ordinary high-resistance airways, already in
 the network solve; nothing else is needed for them.

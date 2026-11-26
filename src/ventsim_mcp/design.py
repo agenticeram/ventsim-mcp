@@ -122,27 +122,31 @@ def fan_select(model: vsm.Model, airflow: float, pressure: float, fans_in_parall
 
 def energy(model: vsm.Model, price_per_kwh: float, hours_per_year: float = 8760.0,
            limit: int = 20) -> dict:
-    """Fan power from the saved results, its yearly energy and cost, and the airways where
-    the air power is spent (frictional pressure drop x airflow)."""
+    """Fan power as saved (Ventsim's 'Fan Power' = airflow x fan total pressure /
+    efficiency, i.e. shaft power), its yearly energy and cost; the air power the fans give
+    the air (airflow x fan total pressure), and where it is lost: frictional and shock
+    pressure drop x airflow in every airway, fan airways included. The rest of the air
+    power leaves as velocity pressure at the outlets."""
     mask = vsm.active_mask(model)
     rows = [r for r, k in zip(model.rows(), mask) if k]
     fans, losses = [], []
+    air = 0.0
     for r in rows:
         uid = model.value(r, "Unique No")
+        q = abs(model.num(r, "Quantity"))
         if model.value(r, "Fan Type") not in ("", "0") and model.value(r, "Fan Off") != "True":
             kw = model.num(r, "Fan Power")
+            air += q * model.num(r, "Pressure Fan") / 1000
             fans.append({"Unique No": uid, "fan": vsm.airway(model, r).get("Fan Name", ""),
-                         "power_kW": round(kw, 2),
+                         "power_kW": round(kw, 2), "efficiency_pct": round(model.num(r, "Pressure Eff"), 1),
                          "energy_MWh_per_year": round(kw * hours_per_year / 1000, 1),
                          "cost_per_year": round(kw * hours_per_year * price_per_kwh, 0)})
-        else:
-            q = model.num(r, "Quantity")
-            dp = abs(model.num(r, "Resistance Total") * q * q)
-            if dp * abs(q) > 0:
-                losses.append({"Unique No": uid, "Branch Name": model.value(r, "Branch Name"),
-                               "air_power_kW": dp * abs(q) / 1000, "pressure_drop_Pa": round(dp, 1),
-                               "airflow_m3s": round(abs(q), 2),
-                               "resistance_type": model.value(r, "Resistance Type")})
+        dp = abs(model.num(r, "Resistance Total") * q * q)
+        if dp * q > 0:
+            losses.append({"Unique No": uid, "Branch Name": model.value(r, "Branch Name"),
+                           "air_power_kW": dp * q / 1000, "pressure_drop_Pa": round(dp, 1),
+                           "airflow_m3s": round(q, 2),
+                           "resistance_type": model.value(r, "Resistance Type")})
     total_fan = sum(f["power_kW"] for f in fans)
     total_loss = sum(x["air_power_kW"] for x in losses) or 1.0
     losses.sort(key=lambda x: -x["air_power_kW"])
@@ -156,10 +160,11 @@ def energy(model: vsm.Model, price_per_kwh: float, hours_per_year: float = 8760.
             "energy_MWh_per_year": round(total_fan * hours_per_year / 1000, 1),
             "cost_per_year": round(total_fan * hours_per_year * price_per_kwh, 0),
             "price_per_kwh": price_per_kwh, "hours_per_year": hours_per_year,
-            "fan_count": len(fans),
-            "fans": sorted(fans, key=lambda f: -f["power_kW"])[:limit],
+            "fan_air_power_kW": round(air, 1),
             "air_power_lost_in_airways_kW": round(total_loss, 1),
             "of_which_in_doors_regulators_stoppings_kW": round(reg, 1),
+            "fan_count": len(fans),
+            "fans": sorted(fans, key=lambda f: -f["power_kW"])[:limit],
             "largest_losses": losses[:limit]}
 
 

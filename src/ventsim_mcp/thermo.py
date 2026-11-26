@@ -147,12 +147,15 @@ def temperatures(model: vsm.Model, flow: dict[str, float] | None = None,
                 # that explains the saved temperature rise
                 dT_s = model.num(r, "db air out") - model.num(r, "db air In")
                 heat = m_s * (CP * dT_s + G * dz_saved) / 1000.0
-        heat += extra.get(uid, 0.0)
+        add = extra.get(uid, 0.0)
         dT_heat = heat * 1000.0 / m / CP if m > MIN_MASSFLOW else 0.0
         # an airway whose airflow dropped far below the saved one would get its saved heat
-        # in a trickle of air; cap the rise (the rock cannot heat air beyond its own
-        # temperature anyway)
+        # in a trickle of air; cap that rise (the rock cannot heat air beyond its own
+        # temperature anyway). Extra sources given by the user are not capped.
         dT_heat = max(min(dT_heat, MAX_HEAT_RISE), -MAX_HEAT_RISE)
+        if m > MIN_MASSFLOW:
+            dT_heat += add * 1000.0 / m / CP
+        heat += add
         dT = dT_heat - G * dz / CP
         # moisture
         pin, pout = model.num(r, "p air In"), model.num(r, "p air out")

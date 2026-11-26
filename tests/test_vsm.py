@@ -354,3 +354,39 @@ def test_calibrate_and_write_results(tmp_path):
     g = v.parse(out)
     assert abs(g.num(g.row(0), "Quantity") - 25) < 0.05
     assert server.list_stages(p)["saved_results_stage"] is None
+
+
+def test_stage_argument(tmp_path):
+    p = _stage_model(tmp_path)
+    st = server.list_stages(p)
+    assert st["saved_results_stage"] == 1 and [s["airways"] for s in st["stages"]] == [3, 3]
+    ids = {i["Unique No"] for i in server.simulate_airflow(p, stage=0, limit=10)["items"]}
+    assert ids == {"1", "2", "3"}
+    ids = {i["Unique No"] for i in server.simulate_airflow(p, limit=10)["items"]}
+    assert ids == {"1", "2", "4"}
+    with pytest.raises(ValueError):
+        server.simulate_airflow(p, stage=5)
+    # escape routes of stage 0 use airway 3, not 4
+    assert server.escape_routes(p, unique_no="3", stage=0)["impassable"] is False
+
+
+def test_large_extra_heat_is_not_capped(tmp_path):
+    p = _fan_loop(tmp_path)
+    # 6.03 MW into 60 kg/s: +100 K (beyond the cap that applies to saved heat only)
+    t = {i["Unique No"]: i for i in server.simulate_heat(p, extra_heat_kw={"1": 6030.0})["hottest"]}
+    assert abs(t["1"]["temp_out_C"] - t["1"]["temp_in_C"] - 6030 / (60 * 1.005)) < 1e-6
+
+
+def test_diesel_exhaust_and_closed_resistance(tmp_path):
+    p = _fan_loop(tmp_path)
+    import ventsim_mcp.vsm as v
+    m = v.parse(p)
+    c = m.row(0)
+    m.lines[m.row_indexes[0]] = "\t".join(c)
+    out = str(tmp_path / "c.vsm")
+    server.edit_airways(p, out, [{"unique_no": "2", "field": "Closed", "value": "true"}])
+    g = v.parse(out)
+    assert g.value(g.row(1), "Resistance Type") == "1" and g.num(g.row(1), "Resistance Total") == 1000
+    with pytest.raises(TypeError):
+        server.diesel_exhaust(p)  # emission factor must be given
+    assert server.diesel_exhaust(p, 0.1)["engines"] == []
