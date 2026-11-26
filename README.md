@@ -47,8 +47,10 @@ Ventsim.
 | `write_results` | Experimental: write a **copy** with this server's airflow and temperatures in it |
 | `render_network` | Draw the network to SVG (plan or section), coloured by any field, fans marked, paths highlighted |
 | `export_csv` | Airways to CSV, any columns |
-| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows), or an airway closed |
+| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows), parallel airways (Pathways), or an airway closed |
 | `add_airways` | Experimental: write a **copy** with new airways (copied from an existing one, joined to the network where the ends meet) |
+| `model_check` | Ventsim warnings and errors found from the file: loose ends, duplicates, blocked fans, fans or stoppings in series, conflicting fixed flows |
+| `fix_model` | Write a **copy** with the safe fixes: duplicates merged with Pathways, loose ends closed, blocked fans off |
 
 `list_airways` takes `units="imperial"` (cfm, fpm, ft, in. w.g., hp).
 
@@ -229,9 +231,7 @@ does not mark, so read those as "air goes round here", not as Ventsim's recircul
   consistently: `what_if` on a written copy reproduces it with 0.00 % error on Fire and
   CoalMine. The changes themselves (resistance factor, Fan Off, Fan Speed) go into the
   inputs too, so re-simulating the copy keeps them. Heat terms and gases are left as they
-  were. Copies from `write_results`, `edit_airways` (geometry, Closed) and `add_airways`
-  open in Ventsim 6.0.5 without errors (a new airway shows in the airway count); they have
-  not been re-simulated in Ventsim, which needs a simulation licence.
+  were. See "Checked in Ventsim" below for copies re-simulated in Ventsim itself.
 - `compliance_check` takes the wet bulb Ventsim saved.
 - Stages: `simulate_airflow(stage=...)` solves another stage from its inputs and
   `escape_routes(stage=...)` checks its escape routes; the other tools use the saved
@@ -251,8 +251,50 @@ folded into it are kept in proportion. `add_airways` copies an existing airway t
 points; it does not copy fans, fixed flows or pressures, heat or gas sources. A new end
 joins the network where it meets an existing airway end (not at a surface connection,
 which it would close); an end that meets nothing is a dead end unless listed in
-`open_ends`. Run `simulate_airflow` on the copy for the new airflow. Edited and added copies
-have not yet been opened in Ventsim itself; check them there before relying on them.
+`open_ends`. An airway whose two ends meet the same junctions as an existing one is
+refused: Ventsim rejects it as a duplicate. For twin drives set `Pathways` (Ventsim's
+Parallel Airways) on the existing airway instead; resistance is scaled by (old/new)^2.
+Run `simulate_airflow` on the copy for the new airflow.
+
+## Model checks (Ventsim warnings)
+
+`model_check` lists the Ventsim warnings and errors (manual, Appendix E) that can be found
+from the file before opening it: loose ends without a surface or closed-end setting
+(no entry / no exit), duplicate airways, zero-length airways, a running fan or fixed flow
+whose air has no path once closed airways are taken out (operating fan blocked / fix
+stopped), fans in series, stoppings in series, and conflicting fixed flows on one path.
+`fix_model` writes a copy with the safe fixes: duplicates merged into one airway with
+`Pathways` and the parallel resistance, air-less loose ends marked Closed End, blocked fans
+turned off. `edit_airways` reports issues its edits create (closing an airway that is the
+only path of a fan, for example).
+
+Checked against Ventsim 6.0.5: the copy with an airway drawn on top of another gives
+Ventsim's "2 duplicate airway" and `model_check` reports the same pair; closing the intake
+of Tutorial2 gives Ventsim's "operating fan blocked" and `model_check` reports that fan.
+On the 20 shipped examples it reports no errors; warnings only in HVACDemoB (loose duct
+ends) and RealMine (stoppings in series). Loose ends that carried air in the saved results
+are not reported: Ventsim treated those as open. Warnings that need a simulation (stalled
+or reversed fans, recirculation, density, heat) come from `fan_duty_check` and
+`recirculation_check`.
+
+## Checked in Ventsim
+
+Copies written by this server, re-simulated in Ventsim DESIGN 6.0.5 (airflow) and compared
+airway by airway (sum of absolute differences / total airflow):
+
+| Copy | Change | Prediction vs Ventsim |
+|---|---|---|
+| Tutorial2 (`write_results`) | two resistances x3 and x0.5 | 0.04 % (`what_if`) |
+| Tutorial2 (`edit_airways`) | a length and a width changed | 0.20 % (`simulate_airflow`) |
+| Tutorial2 (`edit_airways`) | intake closed | both: no airflow anywhere |
+| Fire (`write_results`) | fan at 90 % | 9.5 % (`what_if`) |
+
+Ventsim re-simulating Fire unchanged reproduces its saved file within 0.28 %, so the Fire
+gap comes from the change: with the fan at 90 % Ventsim also recomputes the fire and rock
+heat (inlet temperatures drop by up to 3 K) and with them the natural ventilation, which
+`what_if` keeps frozen. This comparison also showed that Ventsim puts fans whose airway
+equation uses total pressure on the curve's total-pressure column; `what_if` now does the
+same (it scaled the static curve before, 10.7 %).
 
 ## Limits
 

@@ -63,6 +63,13 @@ def _curve(model: vsm.Model) -> dict[str, dict]:
             fixed.append((q, top))
         out[k] = {"points": fixed, "raw": curve, "total": not use1, "area": meta[k][0],
                   "ref": meta[k][1]}
+        if use1 and all(p[2] > 0 for p in pts):
+            # the total-pressure column, for fans whose airway equation uses total pressure
+            tp, top = [], float("inf")
+            for q, pr in sorted((q, p2) for q, _p1, p2 in pts):
+                top = min(top, pr)
+                tp.append((q, top))
+            out[k]["total_curve"] = dict(out[k], points=tp, raw=tp, total=True)
     return out
 
 
@@ -193,6 +200,12 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             rq = model.num(r, "Resistance Total") * q_s * abs(q_s)
             if q_s and pf > st and abs(dp_s - (rq - pf)) < abs(dp_s - (rq - st)):
                 eq_total = True
+                if "total_curve" in raw_all:
+                    # Ventsim puts these fans on their total-pressure curve (checked
+                    # against Ventsim 6 re-simulations): use that column, not a scaled
+                    # static curve, whose total/static ratio changes with the duty point
+                    raw_all = raw_all["total_curve"]
+                    raw = raw_all if uid not in fans_off else None
                 gain = 1.0 if raw_all["total"] or st <= 1 else pf / st
         if raw_all is not None and q_saved:
             # calibrate the curve so it passes through the saved duty point (covers

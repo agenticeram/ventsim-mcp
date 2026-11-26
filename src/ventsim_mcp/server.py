@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from mcp.server.fastmcp import FastMCP
 
-from . import calib, design, edit, escape, render, solver, thermo, vsm
+from . import checks, calib, design, edit, escape, render, solver, thermo, vsm
 
 mcp = FastMCP("ventsim")
 
@@ -586,9 +586,15 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
     fan airways only), Fan Off (true/false, fan airways only) and the geometry fields Width,
     Height, Length (m) and kFactor (kg/m3): area, perimeter and resistance are rescaled with
     them (Atkinson, R ~ k*P*L/A^3). "Closed": true closes an airway (no air, as a sealed
-    stopping; cannot be undone here). Saved results are not recomputed: run
-    simulate_airflow on the copy for the new airflow, then confirm in Ventsim."""
-    allowed = {"Notes", "Group", "Branch Name", "Fan Speed", "Fan Off", "Closed", *edit.GEOMETRY_FIELDS}
+    stopping; cannot be undone here). "Pathways": number of identical airways in parallel
+    that this airway stands for (Ventsim's Parallel Airways; resistance is rescaled by
+    (old/new)^2) - use it for twin drives instead of drawing a second airway on top of the
+    first, which Ventsim rejects as a duplicate. Saved results are not recomputed: run
+    simulate_airflow on the copy for the new airflow, then confirm in Ventsim. Problems the
+    edits create that Ventsim would flag (e.g. a closed airway that blocks a running fan)
+    are listed after the result."""
+    allowed = {"Notes", "Group", "Branch Name", "Fan Speed", "Fan Off", "Closed", "Pathways",
+               *edit.GEOMETRY_FIELDS}
     src, dst = _out_path(path, out_path)
     m = vsm.parse(src)  # fresh copy, not the cached one
     index = {m.value(m.row(n), "Unique No"): n for n in range(len(m.row_indexes))}
@@ -609,6 +615,20 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
             for col, val in (("Resistance Type", "1"), ("Resistance", "1000"), ("Resistance Total", "1000")):
                 if col in m._col:
                     cells[m.col(col)] = val
+            m.lines[m.row_indexes[n]] = "	".join(cells)
+            continue
+        if e["field"] == "Pathways":
+            try:
+                v = int(value)
+            except ValueError:
+                raise ValueError("Pathways must be a whole number") from None
+            if not 1 <= v <= 100:
+                raise ValueError("Pathways must be between 1 and 100")
+            old = max(int(m.num(cells, "Pathways", 1)), 1)
+            for col in ("Resistance", "Resistance Total"):
+                if col in m._col and m.num(cells, col) > 0:
+                    cells[m.col(col)] = f"{m.num(cells, col) * (old / v) ** 2:.9g}"
+            cells[m.col("Pathways")] = str(v)
             m.lines[m.row_indexes[n]] = "	".join(cells)
             continue
         if e["field"] in edit.GEOMETRY_FIELDS:
@@ -636,8 +656,70 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
                 raise ValueError("Fan Off must be true or false")
         cells[m.col(e["field"])] = value
         m.lines[m.row_indexes[n]] = "\t".join(cells)
+    before = checks.check(vsm.parse(src), limit=10 ** 6)
     vsm.dump(m, dst)
-    return f"{len(edits)} edit(s) written to {dst}"
+    after = checks.check(vsm.parse(dst), limit=10 ** 6)
+    new = _new_issues(before, after)
+    msg = f"{len(edits)} edit(s) written to {dst}"
+    if new:
+        msg += ("\nVentsim would now report (run model_check / fix_model on the copy): "
+                + "; ".join(f"{k}: {v}" for k, v in new.items()))
+    return msg
+
+
+def _new_issues(before: dict, after: dict) -> dict:
+    """Issues present in 'after' but not in 'before', by kind, as airway numbers."""
+    def ids(rep, k):
+        out = set()
+        for it in rep.get(k, []) if isinstance(rep.get(k), list) else []:
+            u = it["Unique No"]
+            out.add(tuple(u) if isinstance(u, list) else u)
+        return out
+    kinds = set(after.get("errors", {})) | set(after.get("warnings", {}))
+    res = {}
+    for k in sorted(kinds):
+        d = ids(after, k) - ids(before, k)
+        if d:
+            res[k] = sorted(d, key=str)
+    return res
+
+
+@mcp.tool()
+def model_check(path: str, limit: int = 50) -> dict:
+    """The Ventsim warnings and errors that can be found from the file (Ventsim manual,
+    Appendix E), before opening it in Ventsim: loose ends without surface or closed-end
+    setting (no entry / no exit), duplicate airways (two airways between the same
+    junctions), zero-length airways, running fans or fixed flows whose air has no path
+    (operating fan blocked / fix stopped), fans in series, stoppings in series and
+    conflicting fixed flows on one path. Each item says how to fix it; fix_model applies
+    the automatic fixes to a copy. Not covered (need a simulation): stalled or reversed
+    fans (fan_duty_check), recirculation (recirculation_check), heat and density warnings."""
+    m = _load(path)
+    return checks.check(m, limit)
+
+
+@mcp.tool()
+def fix_model(path: str, out_path: str, fixes: list[str] | None = None) -> dict:
+    """Copy the model to 'out_path' with the automatic fixes for what model_check finds:
+    "duplicates" (airways between the same two junctions become one airway with
+    Pathways = their number and the equivalent parallel resistance; not done when one has
+    a fan, fixed flow or stopping), "loose_ends" (ends without air, surface or closed-end
+    setting are marked Closed End, as Ventsim's edit box does), "blocked_fans" (running
+    fans whose air has no path are turned off). Default: all three. Returns what was
+    changed and the model_check counts before and after."""
+    kinds = set(fixes or ["duplicates", "loose_ends", "blocked_fans"])
+    bad = kinds - {"duplicates", "loose_ends", "blocked_fans"}
+    if bad:
+        raise ValueError(f"unknown fix {sorted(bad)}; known: duplicates, loose_ends, blocked_fans")
+    src, dst = _out_path(path, out_path)
+    m = vsm.parse(src)
+    before = checks.check(m)
+    done = checks.fix(m, kinds)
+    vsm.dump(m, dst)
+    after = checks.check(vsm.parse(dst))
+    return {"written": dst, "changed": done,
+            "before": {**before["errors"], **before["warnings"]},
+            "after": {**after["errors"], **after["warnings"]}}
 
 
 def _out_path(path: str, out_path: str) -> tuple[str, str]:
@@ -673,6 +755,14 @@ def add_airways(path: str, out_path: str, airways: list[dict]) -> dict:
     for a_, b_ in ends.values():
         deg[a_] += 1
         deg[b_] += 1
+    dups = checks.check(check, limit=10 ** 6).get("duplicate", [])
+    dup_new = [d["Unique No"] for d in dups if set(d["Unique No"]) & set(new)]
+    if dup_new:
+        os.remove(dst)
+        raise ValueError(
+            f"airway(s) {dup_new} would join the same two junctions as an existing airway; "
+            "Ventsim rejects that as a duplicate. For a twin drive set 'Pathways' on the "
+            "existing airway with edit_airways, or give the new airway its own route.")
     return {"written": dst, "new_unique_no": new,
             "ends_joined": {u: [deg[k] > 1 for k in ends[u]] for u in new}}
 

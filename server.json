@@ -3,7 +3,7 @@
   "name": "io.github.agenticeram/ventsim-mcp",
   "title": "Ventsim",
   "description": "Read, check and what-if Ventsim mine ventilation models (.vsm files)",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "repository": {
     "url": "https://github.com/agenticeram/ventsim-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "ventsim-mcp",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "transport": { "type": "stdio" }
     }
   ]
