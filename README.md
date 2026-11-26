@@ -7,9 +7,10 @@
 An [MCP](https://modelcontextprotocol.io) server that lets AI assistants read and inspect
 **Ventsim** mine ventilation models (`.vsm` files).
 
-It works on the model file itself, so Ventsim does not need to be running. It does **not**
-run the ventilation simulation; it reads the geometry, fans and the results Ventsim saved in
-the file.
+It works on the model file itself, so Ventsim does not need to be running. It reads the
+geometry, fans and the results Ventsim saved in the file, and has its own experimental
+airflow, temperature and gas solvers for what-if questions; confirm important results in
+Ventsim.
 
 > Unofficial. Not affiliated with or endorsed by Howden / Chasm Consulting. "Ventsim" is
 > their trademark. The `.vsm` format is undocumented; it was read from files saved by
@@ -32,9 +33,12 @@ the file.
 | `size_regulator` | Experimental: resistance, pressure drop and approximate opening area of a regulator that brings one airway to a target airflow |
 | `trace_airflow` | Main airflow path through an airway from intake to exhaust, with length and frictional pressure along it |
 | `simulate_airflow` | Experimental: solve the airflow from the model inputs alone (no saved results needed), with optional changes |
+| `simulate_heat` | Experimental: air temperature through the network after airflow changes or with extra heat sources (diesel, fire, coolers) |
+| `contaminant_spread` | Experimental: steady-state gas / smoke concentration downstream of release points |
 | `render_network` | Draw the network to SVG (plan or section), coloured by any field, fans marked, paths highlighted |
 | `export_csv` | Airways to CSV, any columns |
-| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off |
+| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows) |
+| `add_airways` | Experimental: write a **copy** with new airways (copied from an existing one, joined to the network where the ends meet) |
 
 `list_airways` takes `units="imperial"` (cfm, fpm, ft, in. w.g., hp).
 
@@ -123,10 +127,60 @@ Ventsim saved (`python bench/simulate.py <folder>`):
 The remaining differences come from what the file does not spell out: heat and natural
 ventilation, how Ventsim applies total-pressure fan curves, leakage on ducts.
 
+## Heat and gas (experimental)
+
+`simulate_heat` carries the dry-bulb temperature along the airflow, fully mixed at
+junctions. Each airway keeps the sensible heat Ventsim saved for it (rock, diesel, fans,
+other sources); the auto-compression part of it is split off and follows the new mass flow.
+Extra sources (kW, negative for cooling) can be added; a stopped fan's power is taken out
+and a speed change scales it with speed cubed. Changes are reported against the unchanged
+model, and `baseline_fit` says how well that matches Ventsim.
+
+Re-running an unchanged model with its saved airflow (`python bench/heat.py <folder>`) is a
+reproduction check, not an accuracy figure for changes, because the heat comes from the
+same saved results. Outlet dry-bulb temperature, airways above 0.5 kg/s, mass-flow
+weighted mean / 95th percentile / worst single airway of |error|:
+
+| Ventsim DESIGN 6 example | Airways | Mean | p95 | Max |
+|---|---|---|---|---|
+| Heat Strategies | 30 | 0.03 K | 0.05 K | 0.05 K |
+| diamondmine | 761 | 0.17 K | 0.31 K | 2.9 K |
+| Natural Ventilation Effects | 186 | 0.18 K | 0.47 K | 0.6 K |
+| InclinedHeatMine | 731 | 0.18 K | 0.65 K | 14 K |
+| Blue_sky | 506 | 0.33 K | 0.55 K | 6.4 K |
+| CoalMine | 1,989 | 0.36 K | 1.6 K | 8.8 K |
+| Fire, Fire2 (fire airways) | 147 | 1.1 K | 2.7 K | 11.5 K |
+
+There is no independent check yet: Fire2's saved temperatures are the same as Fire's, so
+the pair used for airflow says nothing about heat. Moisture (latent heat, wet-bulb) and the
+change of rock heat with air temperature are not modelled; treat temperatures after large
+changes as an estimate.
+
+`contaminant_spread` gives the steady-state concentration of a gas released in airways
+(m3/s of pure gas): `c_out = c_in + G/Q`, mixed by airflow at junctions, recirculation
+included. It is checked against exact hand calculations in the tests only: the mine
+examples hold time-dependent contaminant results, and the one steady result (dust in
+HVACDemoB) is in an HVAC model, which is not supported. Reading the model's own source
+inputs (`include_file_sources=True`, `Base Injection` x `Base Concentration`) is an
+unverified interpretation of Ventsim's fields and is off by default.
+
+## Editing geometry (experimental)
+
+`edit_airways` accepts `Width`, `Height`, `Length` and `kFactor`. Area and perimeter follow
+the airway shape (rectangle, round; other profiles are scaled) and `Resistance Total` is
+scaled with the Atkinson relation `R ~ k * P * L / A^3`, so shock and density factors Ventsim
+folded into it are kept in proportion. `add_airways` copies an existing airway to new end
+points; it does not copy fans, fixed flows or pressures, heat or gas sources. A new end
+joins the network where it meets an existing airway end (not at a surface connection,
+which it would close); an end that meets nothing is a dead end unless listed in
+`open_ends`. Run `simulate_airflow` on the copy for the new airflow. Edited and added copies
+have not yet been opened in Ventsim itself; check them there before relying on them.
+
 ## Limits
 
-- Heat, fire, gas and contaminant modelling stay in Ventsim; the airflow simulation here is a network solve only.
-- Editing is limited to text fields; geometry edits would leave results stale.
+- Fire dynamics, time-dependent contaminant spread, moisture and psychrometrics stay in Ventsim.
+- Fan curve pressure at the duty point differs from Ventsim's saved value by about 0.7 % (median); Ventsim applies a correction the file does not hold. Fan airflow is exact.
+- Building HVAC examples (HVACDemo, A, B) are not supported: their ducts connect through room objects the airway table does not hold.
 - Tested on the 20 example models shipped with Ventsim DESIGN 6 (up to 6,700 airways). Other versions untested.
 
 ## Contributing

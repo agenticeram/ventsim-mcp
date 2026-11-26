@@ -8,7 +8,9 @@ from ventsim_mcp import server, vsm
 COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node", "Exit Node",
         "Notes", "Group", "X1", "Y1", "Z1", "X2", "Y2", "Z2", "Width", "Height", "Area",
         "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage",
-        "Resistance Total", "Pressure From", "Pressure To", "QuantityFix", "Fan Speed", "Fan Off"]
+        "Resistance Total", "Pressure From", "Pressure To", "QuantityFix", "Fan Speed", "Fan Off",
+        "Shape Type", "Branch Flags", "Calc Sensible", "Dry Massflow", "db air In", "db air out",
+        "Base Injection", "Base Concentration"]
 
 
 def _row(i, name, p1, p2, q, fan="0"):
@@ -63,7 +65,7 @@ def test_edit_never_overwrites(model_path, tmp_path):
         server.edit_airways(model_path, out, [])
     with pytest.raises(ValueError):
         server.edit_airways(model_path, str(tmp_path / "x.vsm"),
-                            [{"unique_no": "2", "field": "Width", "value": "9"}])
+                            [{"unique_no": "2", "field": "Quantity", "value": "9"}])
 
 
 def test_velocity_and_fans_and_compare(model_path, tmp_path):
@@ -228,3 +230,72 @@ def test_render_units_and_fan_edits(tmp_path):
     with pytest.raises(ValueError):
         server.edit_airways(p, str(tmp_path / "f.vsm"),
                             [{"unique_no": "2", "field": "Fan Speed", "value": "80"}])
+
+
+def test_simulate_heat(tmp_path):
+    p = _fan_loop(tmp_path)
+    # no heat in the file: air stays at the default intake temperature (flat network)
+    r = server.simulate_heat(p, extra_heat_kw={"1": 603.0})
+    # 603 kW into 50 m3/s * 1.2 kg/m3 = 60 kg/s -> +10 K, carried on through airway 2
+    t = {i["Unique No"]: i for i in r["hottest"]}
+    assert abs(t["1"]["temp_out_C"] - t["1"]["temp_in_C"] - 603 / (60 * 1.005)) < 1e-6
+    assert abs(t["2"]["temp_in_C"] - t["1"]["temp_out_C"]) < 1e-9
+    # half fan speed halves the airflow, so the same heat warms the air twice as much
+    r2 = server.simulate_heat(p, extra_heat_kw={"1": 603.0}, fan_speed={"1": 50})
+    t2 = {i["Unique No"]: i for i in r2["hottest"]}
+    assert r2["airflow"] == "re-solved"
+    # changes are against the unchanged model, not the saved temperatures
+    assert abs(t["1"]["change_C"] - 603 / (60 * 1.005)) < 1e-6
+    assert abs((t2["1"]["temp_out_C"] - t2["1"]["temp_in_C"]) / (603 / (60 * 1.005)) - 2) < 0.01
+
+
+def test_contaminant_spread(tmp_path):
+    p = _fan_loop(tmp_path)
+    r = server.contaminant_spread(p, sources={"1": 0.05})
+    # 0.05 m3/s of gas in 50 m3/s = 1000 ppm, carried through airway 2
+    assert [i["Unique No"] for i in r["items"]] == ["1", "2"] or [i["Unique No"] for i in r["items"]] == ["2", "1"]
+    assert all(abs(i["ppm"] - 1000) < 0.1 for i in r["items"])
+    assert server.contaminant_spread(p)["airways_above_threshold"] == 0
+    assert r["items"][0]["percent"] == 0.1
+
+
+def test_geometry_edit_and_add_airway(tmp_path):
+    p = _fan_loop(tmp_path)
+    out = str(tmp_path / "g.vsm")
+    # double the length of airway 2: resistance doubles (rectangle 2 x 5)
+    import ventsim_mcp.vsm as v
+    m = v.parse(p)
+    for n in range(2):
+        c = m.row(n)
+        for k, val in (("Width", "2"), ("Height", "5"), ("Perimeter", "14"), ("kFactor", "0.01"),
+                       ("Shape Type", "0")):
+            c[m.col(k)] = val
+        m.lines[m.row_indexes[n]] = "\t".join(c)
+    v.dump(m, str(tmp_path / "base.vsm"))
+    base = str(tmp_path / "base.vsm")
+    server.edit_airways(base, out, [{"unique_no": "2", "field": "Length", "value": 200}])
+    g = v.parse(out)
+    assert abs(g.num(g.row(1), "Resistance Total") - 0.2) < 1e-6
+    out2 = str(tmp_path / "g2.vsm")
+    server.edit_airways(base, out2, [{"unique_no": "2", "field": "Width", "value": 4}])
+    g2 = v.parse(out2)
+    # area 20 (x2), perimeter 18 -> R * (18/14) / 8
+    assert abs(g2.num(g2.row(1), "Area") - 20) < 1e-9
+    assert abs(g2.num(g2.row(1), "Resistance Total") - 0.1 * 18 / 14 / 8) < 1e-7
+    # a twin of airway 2 would join the exhaust portal and close it: refused
+    with pytest.raises(ValueError):
+        server.add_airways(base, str(tmp_path / "x.vsm"),
+                           [{"like": "2", "start": [1, 0, 0], "end": [2, 0, 0]}])
+    # a new heading off node 1 is a dead end: nothing changes
+    out4 = str(tmp_path / "g4.vsm")
+    server.add_airways(base, out4, [{"like": "2", "start": [1, 0, 0], "end": [1, 100, 0]}])
+    s = {i["Unique No"]: i["airflow"] for i in server.simulate_airflow(out4)["items"]}
+    assert abs(s["1"] - 50) < 0.05 and abs(s["3"]) < 0.01
+    # opened to surface it is a second exhaust like airway 2: 0.1 + 0.1/4 = 0.125
+    out3 = str(tmp_path / "g3.vsm")
+    r = server.add_airways(base, out3, [{"like": "2", "start": [1, 0, 0], "end": [1, 100, 0],
+                                         "open_ends": ["end"]}])
+    assert r["new_unique_no"] == ["3"] and r["ends_joined"]["3"] == [True, False]
+    s = {i["Unique No"]: i["airflow"] for i in server.simulate_airflow(out3)["items"]}
+    q = (-10 + (100 + 4 * 0.125 * 1000) ** 0.5) / (2 * 0.125)  # 0.125 Q^2 = 1000 - 10 Q
+    assert abs(s["1"] - q) < 0.05 and abs(s["2"] - q / 2) < 0.05 and abs(s["3"] - q / 2) < 0.05
