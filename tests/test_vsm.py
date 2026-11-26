@@ -10,7 +10,7 @@ COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node",
         "Perimeter", "Length", "kFactor", "Quantity", "Fan Type", "Fan Numbers", "Stage",
         "Resistance Total", "Pressure From", "Pressure To", "QuantityFix", "Fan Speed", "Fan Off",
         "Shape Type", "Branch Flags", "Calc Sensible", "Dry Massflow", "db air In", "db air out",
-        "Base Injection", "Base Concentration"]
+        "Base Injection", "Base Concentration", "Resistance Type"]
 
 
 def _row(i, name, p1, p2, q, fan="0"):
@@ -299,3 +299,94 @@ def test_geometry_edit_and_add_airway(tmp_path):
     s = {i["Unique No"]: i["airflow"] for i in server.simulate_airflow(out3)["items"]}
     q = (-10 + (100 + 4 * 0.125 * 1000) ** 0.5) / (2 * 0.125)  # 0.125 Q^2 = 1000 - 10 Q
     assert abs(s["1"] - q) < 0.05 and abs(s["2"] - q / 2) < 0.05 and abs(s["3"] - q / 2) < 0.05
+
+
+def test_escape_recirculation_and_arrival(tmp_path):
+    p = _fan_loop(tmp_path)
+    # both ends are portals; each airway is 100 m long: 50 m from its middle to the surface
+    r = server.escape_routes(p, unique_no="2")
+    assert abs(r["to_surface_m"] - 50) < 1e-9 and abs(r["to_refuge_or_surface_m"] - 50) < 1e-9
+    assert server.escape_routes(p, blocked=["1", "2"])["farthest"] == []
+    assert server.recirculation_check(p)["loops"] == 0
+    # 100 m x 10 m2 at 50 m3/s = 20 s per airway, release at t = 1 s
+    a = {i["Unique No"]: i for i in server.contaminant_arrival(p, ["1"])["items"]}
+    assert abs(a["1"]["leaves_s"] - 21) < 1e-9 and abs(a["2"]["leaves_s"] - 41) < 1e-9
+
+
+def test_compliance_energy_and_closing(tmp_path):
+    p = _fan_loop(tmp_path)
+    c = server.compliance_check(p, limits={"max_velocity_ms": 4.0})  # 50 m3/s / 10 m2 = 5 m/s
+    assert c["counts"]["high_velocity"] == 2 and c["counts"]["low_velocity"] == 0
+    assert server.energy_report(p, 0.1)["fan_count"] == 1
+    out = str(tmp_path / "closed.vsm")
+    server.edit_airways(p, out, [{"unique_no": "2", "field": "Closed", "value": "true"}])
+    s = server.simulate_airflow(out)
+    assert all(abs(i["airflow"]) < 0.01 for i in s["items"])
+
+
+def test_fan_select(tmp_path):
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    d = dict.fromkeys(COLS, "")
+    d.update({"MAIN": "1", "Unique No": "1", "X2": "1", "Quantity": "1", "Area": "1"})
+    lines.append("\t".join(d[c] for c in COLS))
+    lines += ["FANS", "1\tLine Fan\t2.8\t0\t0\t0\t0\t1.2",
+              "0\t1000\t1000\t0\t50\t0", "1\t500\t500\t50\t50\t0", "2\t0\t0\t100\t50\t0",
+              "END\tFANS", "ENDFILE"]
+    p = tmp_path / "lib.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines).encode("latin-1")))
+    r = server.fan_select(str(p), 50.0, 500.0)
+    f = r["suitable"][0]
+    assert abs(f["speed_pct"] - 100) < 0.1 and abs(f["power_per_fan_kW"] - 50) < 0.1
+    # 2 fans in parallel, 25 m3/s each at 500 Pa: s^2 (1000 - 10 * 25/s) = 500 -> s ~ 0.84
+    f2 = server.fan_select(str(p), 50.0, 500.0, fans_in_parallel=2)["suitable"][0]
+    s = f2["speed_pct"] / 100
+    assert abs(s * s * (1000 - 10 * 25 / s) - 500) < 1
+
+
+def test_calibrate_and_write_results(tmp_path):
+    p = _fan_loop(tmp_path)
+    # 40 m3/s measured in airway 2: R2 = 0.1 + 0.175 (see test_size_regulator)
+    r = server.calibrate_airflow(p, {"2": 40.0})
+    assert abs(r["factors"]["2"] - 2.75) < 0.01 and r["rms_rel_error_after"] < 1e-3
+    out = str(tmp_path / "res.vsm")
+    server.write_results(p, out, fan_speed={"1": 50})
+    import ventsim_mcp.vsm as v
+    g = v.parse(out)
+    assert abs(g.num(g.row(0), "Quantity") - 25) < 0.05
+    assert server.list_stages(p)["saved_results_stage"] is None
+
+
+def test_stage_argument(tmp_path):
+    p = _stage_model(tmp_path)
+    st = server.list_stages(p)
+    assert st["saved_results_stage"] == 1 and [s["airways"] for s in st["stages"]] == [3, 3]
+    ids = {i["Unique No"] for i in server.simulate_airflow(p, stage=0, limit=10)["items"]}
+    assert ids == {"1", "2", "3"}
+    ids = {i["Unique No"] for i in server.simulate_airflow(p, limit=10)["items"]}
+    assert ids == {"1", "2", "4"}
+    with pytest.raises(ValueError):
+        server.simulate_airflow(p, stage=5)
+    # escape routes of stage 0 use airway 3, not 4
+    assert server.escape_routes(p, unique_no="3", stage=0)["impassable"] is False
+
+
+def test_large_extra_heat_is_not_capped(tmp_path):
+    p = _fan_loop(tmp_path)
+    # 6.03 MW into 60 kg/s: +100 K (beyond the cap that applies to saved heat only)
+    t = {i["Unique No"]: i for i in server.simulate_heat(p, extra_heat_kw={"1": 6030.0})["hottest"]}
+    assert abs(t["1"]["temp_out_C"] - t["1"]["temp_in_C"] - 6030 / (60 * 1.005)) < 1e-6
+
+
+def test_diesel_exhaust_and_closed_resistance(tmp_path):
+    p = _fan_loop(tmp_path)
+    import ventsim_mcp.vsm as v
+    m = v.parse(p)
+    c = m.row(0)
+    m.lines[m.row_indexes[0]] = "\t".join(c)
+    out = str(tmp_path / "c.vsm")
+    server.edit_airways(p, out, [{"unique_no": "2", "field": "Closed", "value": "true"}])
+    g = v.parse(out)
+    assert g.value(g.row(1), "Resistance Type") == "1" and g.num(g.row(1), "Resistance Total") == 1000
+    with pytest.raises(TypeError):
+        server.diesel_exhaust(p)  # emission factor must be given
+    assert server.diesel_exhaust(p, 0.1)["engines"] == []

@@ -33,11 +33,21 @@ Ventsim.
 | `size_regulator` | Experimental: resistance, pressure drop and approximate opening area of a regulator that brings one airway to a target airflow |
 | `trace_airflow` | Main airflow path through an airway from intake to exhaust, with length and frictional pressure along it |
 | `simulate_airflow` | Experimental: solve the airflow from the model inputs alone (no saved results needed), with optional changes |
-| `simulate_heat` | Experimental: air temperature through the network after airflow changes or with extra heat sources (diesel, fire, coolers) |
+| `simulate_heat` | Experimental: dry- and wet-bulb temperature and humidity after airflow changes or with extra heat and moisture sources (diesel, fire, coolers) |
 | `contaminant_spread` | Experimental: steady-state gas / smoke concentration downstream of release points |
+| `escape_routes` | Walking distance from every airway to the surface and to the nearest refuge (Ventsim's own rule), optionally with airways blocked |
+| `recirculation_check` | Closed loops in the airflow (fan recirculation and other circulating air) |
+| `contaminant_arrival` | Time for smoke or gas to reach each airway from release points |
+| `diesel_exhaust` | Experimental: diesel particulate (DPM) concentration and air per kW of diesel |
+| `compliance_check` | Airways outside velocity, diesel air, wet-bulb and escape-distance limits (your limits) |
+| `fan_select` | Fans from the model's fan library that meet a duty, with speed, efficiency, power and stall margin |
+| `energy_report` | Fan energy and yearly cost, and the airways where the air power is lost |
+| `calibrate_airflow` | Experimental: fit airway resistances to measured airflows (survey calibration) |
+| `list_stages` | Stages in the model; most analysis tools take `stage=` to study another one |
+| `write_results` | Experimental: write a **copy** with this server's airflow and temperatures in it |
 | `render_network` | Draw the network to SVG (plan or section), coloured by any field, fans marked, paths highlighted |
 | `export_csv` | Airways to CSV, any columns |
-| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows) |
+| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows), or an airway closed |
 | `add_airways` | Experimental: write a **copy** with new airways (copied from an existing one, joined to the network where the ends meet) |
 
 `list_airways` takes `units="imperial"` (cfm, fpm, ft, in. w.g., hp).
@@ -98,7 +108,7 @@ junctions, closed airways, fans); it is not an accuracy figure for changes
 | the other 17 examples (CoalMine 3,403 airways, Blue_sky, Fire, HVAC, ...) | | < 0.01 % |
 
 **Accuracy for changes.** `Fire` and `Fire2` are the same network with two airway
-resistances changed. Predicting Fire2 from Fire plus those two changes
+resistances changed (x2.26 and x1.41; 25 more differ only in the last digits). Predicting Fire2 from Fire plus those changes
 (`python bench/predict.py Fire.vsm Fire2.vsm`) gives an airflow error of 0.03 % of total
 flow; it reproduces 96.7 % of the airflow change Ventsim computed. This is the only such
 pair among the shipped examples, so treat it as one data point.
@@ -136,25 +146,34 @@ Extra sources (kW, negative for cooling) can be added; a stopped fan's power is 
 and a speed change scales it with speed cubed. Changes are reported against the unchanged
 model, and `baseline_fit` says how well that matches Ventsim.
 
+Moisture is carried the same way: each airway adds the water Ventsim saved as evaporating
+there (latent heat / 2450 kJ/kg), mixed by mass at junctions, and the wet bulb follows from
+dry bulb, moisture and pressure (standard psychrometrics; Ventsim's saved latent heat and
+wet bulbs agree with it to 0.4 % in the heat examples).
+
 Re-running an unchanged model with its saved airflow (`python bench/heat.py <folder>`) is a
 reproduction check, not an accuracy figure for changes, because the heat comes from the
-same saved results. Outlet dry-bulb temperature, airways above 0.5 kg/s, mass-flow
-weighted mean / 95th percentile / worst single airway of |error|:
+same saved results. Outlet temperature, airways above 0.5 kg/s, mass-flow weighted mean /
+95th percentile / worst single airway of |error|:
 
-| Ventsim DESIGN 6 example | Airways | Mean | p95 | Max |
-|---|---|---|---|---|
-| Heat Strategies | 30 | 0.03 K | 0.05 K | 0.05 K |
-| diamondmine | 761 | 0.17 K | 0.31 K | 2.9 K |
-| Natural Ventilation Effects | 186 | 0.18 K | 0.47 K | 0.6 K |
-| InclinedHeatMine | 731 | 0.18 K | 0.65 K | 14 K |
-| Blue_sky | 506 | 0.33 K | 0.55 K | 6.4 K |
-| CoalMine | 1,989 | 0.36 K | 1.6 K | 8.8 K |
-| Fire, Fire2 (fire airways) | 147 | 1.1 K | 2.7 K | 11.5 K |
+| Ventsim DESIGN 6 example | Airways | Dry bulb | Wet bulb |
+|---|---|---|---|
+| Heat Strategies | 30 | 0.03 / 0.05 / 0.05 K | 0.01 / 0.02 / 0.02 K |
+| diamondmine | 761 | 0.17 / 0.31 / 2.9 K | 0.04 / 0.11 / 0.9 K |
+| Natural Ventilation Effects | 186 | 0.18 / 0.47 / 0.6 K | 0.05 / 0.14 / 0.2 K |
+| InclinedHeatMine | 731 | 0.18 / 0.65 / 14 K | 0.08 / 0.80 / 8 K |
+| Blue_sky | 506 | 0.33 / 0.55 / 6.4 K | 0.10 / 0.33 / 3.3 K |
+| CoalMine | 1,989 | 0.36 / 1.6 / 8.8 K | 0.41 / 1.1 / 7.3 K |
+| Fire, Fire2 (fire airways) | 147 | 1.1 / 2.7 / 11.5 K | 3.3 / 7.4 / 11 K |
 
 There is no independent check yet: Fire2's saved temperatures are the same as Fire's, so
 the pair used for airflow says nothing about heat. Moisture (latent heat, wet-bulb) and the
 change of rock heat with air temperature are not modelled; treat temperatures after large
 changes as an estimate.
+
+Heat loads stay as saved: rock heat is not computed from rock properties (Ventsim takes the
+virgin rock temperature and rock age from global climate settings for most airways, and
+where those live in the file is not known yet).
 
 `contaminant_spread` gives the steady-state concentration of a gas released in airways
 (m3/s of pure gas): `c_out = c_in + G/Q`, mixed by airflow at junctions, recirculation
@@ -163,6 +182,62 @@ examples hold time-dependent contaminant results, and the one steady result (dus
 HVACDemoB) is in an HVAC model, which is not supported. Reading the model's own source
 inputs (`include_file_sources=True`, `Base Injection` x `Base Concentration`) is an
 unverified interpretation of Ventsim's fields and is off by default.
+
+`contaminant_arrival` gives the first arrival of smoke or gas carried at the mean air
+velocity, the rule behind Ventsim's `Spread Time`: it matches all 131 airways of Tutorial1
+to within 0.1 % (`python bench/spread.py <folder>`). InclinedHeatMine's saved spread times
+are 1 - 4 % faster than its saved airflow allows, so they look like results of an earlier
+run; HVACDemoB is an HVAC model.
+
+`diesel_exhaust` mixes diesel particulate from the engines in the model (kW x an emission
+factor you give, g/kWh) along the airflow. Ventsim's own saved DPM values do not follow a steady mixing
+model (they look time-dependent), so this tool is not checked against Ventsim.
+
+## Escape routes and recirculation
+
+`escape_routes` reproduces Ventsim's `distancetosurface` and `distancetorefuge` exactly:
+shortest walk along airways from the middle of each airway to a surface connection or to the
+middle of a refuge airway (`Branch Flags2` bit 5); resistances marked impassable in the
+model's resistance table (stoppings, roof falls) cannot be walked. All 3,262 airways of the
+two examples that hold these results match (`python bench/escape.py <folder>`).
+`recirculation_check` finds the strongly connected parts of the directed airflow. Its fan
+loop in Fire2 is exactly the seven airways Ventsim marks as recirculation; it also reports
+loops without fans (and large circulating groups in Blue_sky and RealMine) that Ventsim
+does not mark, so read those as "air goes round here", not as Ventsim's recirculation.
+
+## Design tools
+
+- `fan_select` reads the fan library in the model (static and total pressure, efficiency,
+  power per curve point) and finds the speed at which each fan meets a duty. Checked on the
+  running fans of the examples (`python bench/fan_select.py <folder>`): for 99 of 103 fans
+  with a library curve (for the other 4 no speed from 20 to 250 % fits), the fan's own curve meets its saved duty, at a speed within
+  1.3 points of the saved `Fan Speed` (6 points where only a total-pressure curve is given).
+- `energy_report` uses the saved fan power (Ventsim's `Fan Power` = airflow x fan total
+  pressure / efficiency) and splits the air power over the airways.
+- `compliance_check` limits default to common practice values (0.25 - 6 m/s, 20 m/s in
+  shafts, 0.06 m3/s per diesel kW, 28 C wet bulb); they are not any particular regulation,
+  so pass the values that apply to you.
+- `calibrate_airflow` fits resistance factors to measured airflows by least squares on the
+  what_if solver. Using Fire2's airflow in the 27 airways whose stored resistance differs
+  from Fire as "measurements" on Fire (`python bench/calibrate.py Fire.vsm Fire2.vsm`)
+  brings the whole network to within 0.002 % of Fire2's airflow in 8 s. The resistances
+  themselves are not recovered: the two airways that really changed (x2.26 and x1.41) come
+  out as x1.52 and x1.08, the rest of the change lands on airways in series with them, which
+  the measurements cannot tell apart. Treat the factors as one fit, not as measured values.
+- `write_results` writes airflow, end pressures, airway pressure drop, fan pressure and
+  temperatures into a copy (what_if solver by default). The other tools read such a copy
+  consistently: `what_if` on a written copy reproduces it with 0.00 % error on Fire and
+  CoalMine. Heat terms and gases are left as they were; the copies have not been opened in
+  Ventsim itself yet.
+- `compliance_check` takes the wet bulb Ventsim saved.
+- Stages: `simulate_airflow(stage=...)` solves another stage from its inputs and
+  `escape_routes(stage=...)` checks its escape routes; the other tools use the saved
+  results, which belong to the saved stage.
+- Closing an airway (`edit_airways`, field `Closed`) writes it the way Ventsim stores
+  closed airways in the examples: resistance type 1, resistance 1000.
+
+Leakage: in these examples leakage paths are ordinary high-resistance airways, already in
+the network solve; nothing else is needed for them.
 
 ## Editing geometry (experimental)
 
@@ -178,7 +253,7 @@ have not yet been opened in Ventsim itself; check them there before relying on t
 
 ## Limits
 
-- Fire dynamics, time-dependent contaminant spread, moisture and psychrometrics stay in Ventsim.
+- Fire dynamics, dispersion in time-dependent contaminant spread and rock heat from rock properties stay in Ventsim.
 - Fan curve pressure at the duty point differs from Ventsim's saved value by about 0.7 % (median); Ventsim applies a correction the file does not hold. Fan airflow is exact.
 - Building HVAC examples (HVACDemo, A, B) are not supported: their ducts connect through room objects the airway table does not hold.
 - Tested on the 20 example models shipped with Ventsim DESIGN 6 (up to 6,700 airways). Other versions untested.

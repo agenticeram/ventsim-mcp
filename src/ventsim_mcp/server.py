@@ -1,6 +1,7 @@
 """MCP server exposing Ventsim .vsm model files to an AI assistant."""
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import os
@@ -8,7 +9,7 @@ from collections import defaultdict
 
 from mcp.server.fastmcp import FastMCP
 
-from . import edit, render, solver, thermo, vsm
+from . import calib, design, edit, escape, render, solver, thermo, vsm
 
 mcp = FastMCP("ventsim")
 
@@ -43,15 +44,24 @@ def _to_units(w: dict, units: str) -> dict:
     return out
 
 
-def _load(path: str) -> vsm.Model:
+def _load(path: str, stage: int | None = None) -> vsm.Model:
     path = os.path.abspath(os.path.expanduser(path))
     mtime = os.path.getmtime(path)
     hit = _cache.get(path)
     if hit and hit[0] == mtime:
-        return hit[1]
-    model = vsm.parse(path)
-    _cache[path] = (mtime, model)
-    return model
+        model = hit[1]
+    else:
+        model = vsm.parse(path)
+        _cache[path] = (mtime, model)
+    if stage is None:
+        return model
+    present = {k for b in vsm._stage_bits(model) for k in range(31) if b >> k & 1}
+    if int(stage) not in present:
+        raise ValueError(f"stage {stage} not in the model (stages: {sorted(present)}; see list_stages)")
+    view = copy.copy(model)  # shares the lines, own stage choice
+    view.__dict__ = dict(model.__dict__)
+    view.__dict__["_active_stage"] = int(stage)
+    return view
 
 
 @mcp.tool()
@@ -373,15 +383,17 @@ def trace_airflow(path: str, unique_no: str, max_steps: int = 200) -> dict:
 @mcp.tool()
 def simulate_airflow(path: str, resistance_scale: dict[str, float] | None = None,
                      fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
-                     use_saved_heat: bool = False, limit: int = 30) -> dict:
+                     use_saved_heat: bool = False, stage: int | None = None,
+                     limit: int = 30) -> dict:
     """EXPERIMENTAL. Solve the airflow from the model inputs alone, without the results
     Ventsim saved: airway resistance, fan curves, fan speed and count, fixed-flow and
     fixed-pressure airways, closed airways, surface connections and dead ends. Works on a
     model that was never simulated. Optional changes as in what_if. Natural ventilation and
     heat are not modelled; use_saved_heat=True takes them from the saved results instead.
     If the file has saved airflow, 'vs_saved' compares the two (error = total absolute
-    airflow difference / total airflow)."""
-    m = _load(path)
+    airflow difference / total airflow). stage: simulate another stage (see list_stages)
+    instead of the one whose results are saved."""
+    m = _load(path, stage)
     s = solver.simulate(m, resistance_scale={str(k): float(v) for k, v in (resistance_scale or {}).items()},
                         fans_off={str(u) for u in (fans_off or [])},
                         fan_speed={str(k): float(v) for k, v in (fan_speed or {}).items()},
@@ -431,16 +443,20 @@ def simulate_heat(path: str, extra_heat_kw: dict[str, float] | None = None,
                   resistance_scale: dict[str, float] | None = None,
                   fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
                   airflow: str = "saved", surface_temp: float | None = None,
+                  extra_latent_kw: dict[str, float] | None = None,
                   limit: int = 30) -> dict:
-    """EXPERIMENTAL. Dry-bulb air temperature through the network, mixed at junctions.
+    """EXPERIMENTAL. Dry- and wet-bulb air temperature and relative humidity through the
+    network, mixed at junctions.
     Heat per airway is what Ventsim saved (rock, diesel, fans, other sources) plus
     'extra_heat_kw' ({Unique No: kW}: a new diesel fleet, a fire, a cooler as a negative
     value); auto-compression follows the air. With resistance_scale / fans_off / fan_speed
     the airflow is re-solved first (as in what_if); airflow='simulated' takes it from
     simulate_airflow. A stopped fan's power is taken out of its airway's heat, a speed
-    change scales it with speed cubed. Moisture and the change of rock heat with air
-    temperature are not modelled. Returns the hottest airways and the largest changes
-    against the unchanged model (baseline_fit says how well the baseline matches Ventsim)."""
+    change scales it with speed cubed. Moisture: the water Ventsim saved as evaporating in
+    each airway plus 'extra_latent_kw' ({Unique No: kW of evaporation}). The change of
+    rock heat with air temperature is not modelled. Returns the hottest airways (by wet
+    bulb) and the largest changes against the unchanged model (baseline_fit says how well
+    the baseline matches Ventsim)."""
     m = _load(path)
     flow = _flows(m, resistance_scale, fans_off, fan_speed, airflow)
     extra = {str(k): float(v) for k, v in (extra_heat_kw or {}).items()}
@@ -457,32 +473,40 @@ def simulate_heat(path: str, extra_heat_kw: dict[str, float] | None = None,
         if r is not None and old > 0 and str(u) not in {str(x) for x in fans_off or []}:
             extra[str(u)] = extra.get(str(u), 0.0) + m.num(r, "Fan Power") * ((float(pct) / old) ** 3 - 1)
     base = thermo.temperatures(m, None, None, surface_temp)
-    t = thermo.temperatures(m, flow, extra, surface_temp)
-    items, fit_e, fit_w = [], 0.0, 0.0
+    t = thermo.temperatures(m, flow, extra, surface_temp,
+                            {str(k): float(v) for k, v in (extra_latent_kw or {}).items()})
+    items, fit_e, fit_w, fit_wb = [], 0.0, 0.0, 0.0
     for u, d in t.items():
         r, b = rows[u], base[u]
         saved = m.num(r, "db air out")
         if b["massflow"] > 0.5:
             fit_e += abs(b["t_out"] - saved) * b["massflow"]
+            fit_wb += abs(b["wb_out"] - m.num(r, "wb air out")) * b["massflow"]
             fit_w += b["massflow"]
         items.append({"Unique No": u, "Branch Name": m.value(r, "Branch Name"),
                       "temp_in_C": round(d["t_in"], 2), "temp_out_C": round(d["t_out"], 2),
+                      "wet_bulb_out_C": round(d["wb_out"], 2), "rh_out_pct": round(d["rh_out"], 1),
                       "baseline_temp_out_C": round(b["t_out"], 2),
                       "change_C": round(d["t_out"] - b["t_out"], 2),
+                      "wet_bulb_change_C": round(d["wb_out"] - b["wb_out"], 2),
                       "baseline_misfit_C": round(b["t_out"] - saved, 2),
-                      "massflow_kgs": round(d["massflow"], 2), "heat_kw": round(d["heat_kw"], 2)})
+                      "massflow_kgs": round(d["massflow"], 2), "heat_kw": round(d["heat_kw"], 2),
+                      "latent_kw": round(d["latent_kw"], 2)})
     moving = [i for i in items if i["massflow_kgs"] > 0.5]
     heat_run = any(m.num(r, "Calc Sensible") for r in rows.values())
     return {"airways": len(items), "airflow": _flow_label(flow, airflow),
             "baseline_fit": {
                 "heat_simulation_in_file": heat_run,
                 "weighted_mean_abs_error_C": round(fit_e / fit_w, 3) if fit_w and heat_run else None,
+                "wet_bulb_weighted_mean_abs_error_C": round(fit_wb / fit_w, 3) if fit_w and heat_run else None,
                 "note": "baseline = this model with the saved airflow and no changes, compared "
                         "with the temperatures Ventsim saved; changes are reported against "
                         "the baseline. Airways with a large baseline_misfit_C are unreliable."},
             "max_temp_C": max((i["temp_out_C"] for i in moving), default=None),
-            "hottest": sorted(moving, key=lambda i: -i["temp_out_C"])[:limit],
-            "largest_change": sorted(moving, key=lambda i: -abs(i["change_C"]))[:limit]}
+            "max_wet_bulb_C": max((i["wet_bulb_out_C"] for i in moving), default=None),
+            "hottest": sorted(moving, key=lambda i: -i["wet_bulb_out_C"])[:limit],
+            "largest_change": sorted(moving, key=lambda i: -max(abs(i["change_C"]),
+                                                                abs(i["wet_bulb_change_C"])))[:limit]}
 
 
 @mcp.tool()
@@ -561,9 +585,10 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
     Allowed fields: Notes, Group, Branch Name (text), Fan Speed (% of curve speed, 1-200,
     fan airways only), Fan Off (true/false, fan airways only) and the geometry fields Width,
     Height, Length (m) and kFactor (kg/m3): area, perimeter and resistance are rescaled with
-    them (Atkinson, R ~ k*P*L/A^3). Saved results are not recomputed: run simulate_airflow
-    on the copy for the new airflow, then confirm in Ventsim."""
-    allowed = {"Notes", "Group", "Branch Name", "Fan Speed", "Fan Off", *edit.GEOMETRY_FIELDS}
+    them (Atkinson, R ~ k*P*L/A^3). "Closed": true closes an airway (no air, as a sealed
+    stopping; cannot be undone here). Saved results are not recomputed: run
+    simulate_airflow on the copy for the new airflow, then confirm in Ventsim."""
+    allowed = {"Notes", "Group", "Branch Name", "Fan Speed", "Fan Off", "Closed", *edit.GEOMETRY_FIELDS}
     src, dst = _out_path(path, out_path)
     m = vsm.parse(src)  # fresh copy, not the cached one
     index = {m.value(m.row(n), "Unique No"): n for n in range(len(m.row_indexes))}
@@ -577,6 +602,15 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
         if n is None:
             raise ValueError(f"no airway with Unique No {e['unique_no']}")
         cells = m.row(n)
+        if e["field"] == "Closed":
+            if value.lower() != "true":
+                raise ValueError("Closed only accepts true (reopening needs the original resistance)")
+            # Ventsim stores a closed airway as type 1 with a resistance of 1000 Ns2/m8
+            for col, val in (("Resistance Type", "1"), ("Resistance", "1000"), ("Resistance Total", "1000")):
+                if col in m._col:
+                    cells[m.col(col)] = val
+            m.lines[m.row_indexes[n]] = "	".join(cells)
+            continue
         if e["field"] in edit.GEOMETRY_FIELDS:
             try:
                 v = float(value)
@@ -641,6 +675,236 @@ def add_airways(path: str, out_path: str, airways: list[dict]) -> dict:
         deg[b_] += 1
     return {"written": dst, "new_unique_no": new,
             "ends_joined": {u: [deg[k] > 1 for k in ends[u]] for u in new}}
+
+
+@mcp.tool()
+def list_stages(path: str) -> dict:
+    """Stages (mine plan periods) in the model, their airway counts, and the stage whose
+    results are saved (used by default). Another stage can be solved from its inputs with
+    simulate_airflow(stage=...) and its escape routes checked with escape_routes(stage=...);
+    the other tools use the saved results, which belong to the saved stage."""
+    m = _load(path)
+    bits = vsm._stage_bits(m)
+    present = sorted({k for b in bits for k in range(31) if b >> k & 1})
+    k = vsm.active_stage(m)
+    return {"saved_results_stage": k, "saved_results_stage_name": vsm.stage_name(m, k),
+            "stages": [{"stage": s, "name": vsm.stage_name(m, s),
+                        "airways": sum(1 for b in bits if b >> s & 1)} for s in present]}
+
+
+@mcp.tool()
+def escape_routes(path: str, unique_no: str | None = None, blocked: list[str] | None = None,
+                  stage: int | None = None, limit: int = 30) -> dict:
+    """Walking distance from each airway to the surface and to the nearest refuge (or the
+    surface, if nearer), as Ventsim computes it: shortest path along airways from the
+    middle of the airway; stoppings and other impassable resistances cannot be walked.
+    'blocked': extra airways to treat as impassable (a fire, a fall). With unique_no, the
+    distances for that airway; otherwise the farthest airways first."""
+    m = _load(path, stage)
+    d = escape.distances(m, {str(u) for u in (blocked or [])})
+    rows = {m.value(r, "Unique No"): r for r in m.rows()}
+
+    def item(u):
+        x = d[u]
+        return {"Unique No": u, "Branch Name": m.value(rows[u], "Branch Name"),
+                "to_surface_m": None if x["to_surface"] is None else round(x["to_surface"], 1),
+                "to_refuge_or_surface_m": None if x["to_refuge"] is None else round(x["to_refuge"], 1),
+                "is_refuge": x["refuge"], "impassable": x["impassable"]}
+
+    if unique_no is not None:
+        if str(unique_no) not in d:
+            raise ValueError(f"airway {unique_no} not in the simulated stage")
+        return item(str(unique_no))
+    walk = [u for u in d if not d[u]["impassable"]]
+    cut = [u for u in walk if d[u]["to_surface"] is None]
+    far = sorted((u for u in walk if d[u]["to_refuge"] is not None),
+                 key=lambda u: -d[u]["to_refuge"])
+    return {"airways": len(d), "refuges": sum(1 for x in d.values() if x["refuge"]),
+            "cut_off_from_surface": len(cut), "cut_off_examples": [item(u) for u in cut[:limit]],
+            "farthest": [item(u) for u in far[:limit]]}
+
+
+@mcp.tool()
+def recirculation_check(path: str, resistance_scale: dict[str, float] | None = None,
+                        fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
+                        airflow: str = "saved", min_flow: float = 0.1) -> dict:
+    """Closed loops in the airflow: air that comes back to a point it already passed (fan
+    recirculation and other circulating loops). Each group lists its airways, the fans in
+    it and the smallest airflow around the loop. Changes and airflow as in simulate_heat."""
+    m = _load(path)
+    flow = _flows(m, resistance_scale, fans_off, fan_speed, airflow)
+    g = escape.recirculation(m, flow, min_flow)
+    return {"loops": len(g), "loops_with_fans": sum(1 for x in g if x["fans"]),
+            "airflow": _flow_label(flow, airflow), "groups": g}
+
+
+@mcp.tool()
+def contaminant_arrival(path: str, sources: list[str], resistance_scale: dict[str, float] | None = None,
+                        fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
+                        airflow: str = "saved", limit: int = 50) -> dict:
+    """Time for smoke or gas released at the start of the 'sources' airways (Unique Nos) to
+    reach each airway, carried at the mean air velocity (Ventsim's 'Spread Time' rule; no
+    dispersion). Release at t = 1 s as in Ventsim. Returns the reached airways, earliest
+    first, and the number never reached."""
+    m = _load(path)
+    flow = _flows(m, resistance_scale, fans_off, fan_speed, airflow)
+    t = thermo.arrival_times(m, [str(s) for s in sources], flow)
+    rows = {m.value(r, "Unique No"): r for r in m.rows()}
+    items = sorted(({"Unique No": u, "Branch Name": m.value(rows[u], "Branch Name"),
+                     "arrives_s": round(d["arrive_s"], 1), "leaves_s": round(d["leave_s"], 1)}
+                    for u, d in t.items()), key=lambda i: i["arrives_s"])
+    return {"reached": len(items), "not_reached": len(rows) - len(items),
+            "last_arrival_s": items[-1]["leaves_s"] if items else None,
+            "airflow": _flow_label(flow, airflow), "items": items[:limit]}
+
+
+@mcp.tool()
+def diesel_exhaust(path: str, emission_g_per_kwh: float, load_factor: float = 1.0,
+                   air_per_kw_m3s: float = 0.06, limit: int = 30) -> dict:
+    """EXPERIMENTAL, not compared with Ventsim. Diesel particulate (DPM) concentration from
+    the diesel engines in the model ('dieselkw' x load_factor x emission_g_per_kwh, the
+    engine's DPM emission factor in g/kWh, e.g. from its certificate), mixed along the
+    saved airflow; and the airflow against air_per_kw_m3s for each engine."""
+    m = _load(path)
+    rows = {m.value(r, "Unique No"): r for r in m.rows()}
+    src, engines = {}, []
+    for u, r in rows.items():
+        kw = m.num(r, "dieselkw")
+        if kw <= 0:
+            continue
+        ef = float(emission_g_per_kwh)
+        src[u] = kw * load_factor * ef / 3600.0  # g/s
+        q = abs(m.num(r, "Quantity"))
+        engines.append({"Unique No": u, "Branch Name": m.value(r, "Branch Name"), "diesel_kW": kw,
+                        "emission_g_per_kwh": ef, "airflow_m3s": round(q, 2),
+                        "required_m3s": round(kw * air_per_kw_m3s, 2), "enough_air": q >= kw * air_per_kw_m3s})
+    c = thermo.concentrations(m, src, None, False)
+    items = sorted(({"Unique No": u, "Branch Name": m.value(rows[u], "Branch Name"),
+                     "dpm_mg_m3": round(d["c_out"] * 1000, 4)} for u, d in c.items()
+                    if d["c_out"] > 0 and d["airflow"] > 1e-6), key=lambda i: -i["dpm_mg_m3"])
+    return {"engines": engines, "airways_with_dpm": len(items), "items": items[:limit]}
+
+
+@mcp.tool()
+def compliance_check(path: str, limits: dict | None = None, check_wet_bulb: bool = True,
+                     limit: int = 30) -> dict:
+    """Airways outside ventilation limits: low and high air velocity (shafts have their own
+    maximum), airflow per kW of diesel, wet-bulb temperature (from simulate_heat's model,
+    as Ventsim saved it, when the file has a heat simulation) and walking distance to a
+    refuge or the surface.
+    The defaults are common practice values, not a particular regulation; pass your own in
+    'limits': min_velocity_ms, max_velocity_ms, max_velocity_shaft_ms,
+    air_per_diesel_kw_m3s, max_wet_bulb_C, max_escape_distance_m (null switches a check
+    off). Closed and impassable airways are skipped."""
+    m = _load(path)
+    wb = None
+    if check_wet_bulb and any(m.num(r, "Calc Sensible") for r in m.rows()):
+        wb = {m.value(r, "Unique No"): m.num(r, "wb air out") for r in m.rows()}
+    return design.compliance(m, limits, wb, limit)
+
+
+@mcp.tool()
+def fan_select(path: str, airflow: float, pressure: float, fans_in_parallel: int = 1,
+               density: float = 1.2, max_speed_pct: float = 100.0, pressure_type: str = "static",
+               limit: int = 10) -> dict:
+    """Pick fans from the fan library stored in the model for a duty: total 'airflow' (m3/s)
+    at 'pressure' (Pa, static or total) with 'fans_in_parallel' units. For each fan: the
+    speed at which it meets the duty (affinity laws), efficiency, power per fan and margin
+    to the stall peak; suitable fans (speed <= max_speed_pct, right of the stall peak)
+    ranked by power."""
+    if pressure_type not in ("static", "total"):
+        raise ValueError("pressure_type must be 'static' or 'total'")
+    return design.fan_select(_load(path), airflow, pressure, fans_in_parallel, density,
+                             max_speed_pct, pressure_type, limit)
+
+
+@mcp.tool()
+def energy_report(path: str, price_per_kwh: float, hours_per_year: float = 8760.0,
+                  limit: int = 20) -> dict:
+    """Fan power (as saved), yearly energy and cost at 'price_per_kwh', and where the air
+    power goes: the airways with the largest frictional pressure drop x airflow, and the
+    part lost in doors, regulators and stoppings."""
+    return design.energy(_load(path), price_per_kwh, hours_per_year, limit)
+
+
+@mcp.tool()
+def calibrate_airflow(path: str, measured: dict[str, float], adjustable: list[str] | None = None,
+                      max_factor: float = 20.0, from_inputs: bool = False) -> dict:
+    """EXPERIMENTAL. Fit airway resistances to survey measurements: 'measured' = {Unique
+    No: airflow m3/s}; 'adjustable' = airways whose resistance may change (default: the
+    measured ones). Returns the resistance factors, the airflow before and after at the
+    measured airways, and the remaining misfit. Feed the factors to what_if /
+    simulate_airflow as resistance_scale, or write them with edit_airways (kFactor).
+    Measurements that cannot tell airways apart (airways in series) get the smallest
+    change; check 'at_limit'."""
+    r = calib.calibrate(_load(path), {str(k): float(v) for k, v in measured.items()},
+                        [str(u) for u in adjustable] if adjustable else None, max_factor,
+                        from_inputs)
+    r.pop("flows")
+    r["factors"] = {u: round(v, 4) for u, v in r["factors"].items()}
+    for k in ("before", "after"):
+        r[k] = {u: round(v, 3) for u, v in r[k].items()}
+    r["rms_rel_error_before"] = round(r["rms_rel_error_before"], 5)
+    r["rms_rel_error_after"] = round(r["rms_rel_error_after"], 5)
+    return r
+
+
+@mcp.tool()
+def write_results(path: str, out_path: str, resistance_scale: dict[str, float] | None = None,
+                  fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
+                  airflow: str = "saved", with_heat: bool = True) -> dict:
+    """EXPERIMENTAL. Copy the model to 'out_path' with this server's results written into
+    it, so Ventsim and the other tools see them: airflow ('Quantity', 'Dry Massflow'),
+    pressures at both ends, the airway pressure drop and the fan pressure, from the what_if
+    solver (airflow='saved', default: the saved state plus the changes given) or from
+    simulate_airflow (airflow='simulated', inputs only, less accurate); with_heat also the
+    dry- and wet-bulb temperatures from simulate_heat. Ventsim stores airflow positive
+    along each airway; an airway whose air now runs backwards is written negative and
+    counted in 'reversed'. Other saved results (heat terms, gases) stay as they were;
+    re-simulate in Ventsim before relying on the copy. Never overwrites a file."""
+    src, dst = _out_path(path, out_path)
+    m = vsm.parse(src)
+    rs = {str(k): float(v) for k, v in (resistance_scale or {}).items()}
+    off = {str(u) for u in (fans_off or [])}
+    sp = {str(k): float(v) for k, v in (fan_speed or {}).items()}
+    if airflow == "simulated":
+        sol = solver.simulate(m, resistance_scale=rs, fans_off=off, fan_speed=sp)
+    elif airflow == "saved":
+        sol = solver.solve(m, resistance_scale=rs, fans_off=off, fan_speed=sp)
+    else:
+        raise ValueError("airflow must be 'saved' or 'simulated'")
+    P = sol["P"]
+    flow = {u: float(q) for u, q in zip(sol["uid"], sol["Q"])}
+    heat_run = any(m.num(r, "Calc Sensible") for r in m.rows())
+    temps = thermo.temperatures(m, flow) if with_heat and heat_run else {}
+    index = {m.value(m.row(n), "Unique No"): n for n in range(len(m.row_indexes))}
+    reversed_ = 0
+    for b_, q in zip(sol["branches"], sol["Q"]):
+        i, j, R, curve, uid, nv = b_[0], b_[1], b_[2], b_[3], b_[5], b_[10]
+        q = float(q)
+        n = index[uid]
+        cells = m.row(n)
+        rho = thermo._density(m, cells)
+        drop = R * q * abs(q)
+        vals = [("Quantity", q), ("Dry Massflow", rho * q), ("Pressure From", P[i]),
+                ("Pressure To", P[j]), ("Pressure Branch", -drop)]
+        if curve is not None:
+            vals.append(("Pressure Fan", drop - (P[i] - P[j] + nv)))
+        reversed_ += q < 0 < m.num(cells, "Quantity")
+        for col, val in vals:
+            if col in m._col:
+                cells[m.col(col)] = f"{float(val):.9g}"
+        if uid in temps:
+            t = temps[uid]
+            for col, key in (("db air In", "t_in"), ("db air out", "t_out"), ("wb air In", "wb_in"),
+                             ("wb air out", "wb_out")):
+                if col in m._col:
+                    cells[m.col(col)] = f"{t[key]:.7g}"
+        m.lines[m.row_indexes[n]] = "	".join(cells)
+    vsm.dump(m, dst)
+    return {"written": dst, "airways": len(flow), "reversed": int(reversed_),
+            "airflow": "simulated" if airflow == "simulated" else "what_if solver",
+            "temperatures": bool(temps), "converged": sol["residual"] < 0.05}
 
 
 def main() -> None:
