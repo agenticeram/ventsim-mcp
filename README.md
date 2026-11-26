@@ -33,7 +33,8 @@ Ventsim.
 | `size_regulator` | Experimental: resistance, pressure drop and approximate opening area of a regulator that brings one airway to a target airflow |
 | `trace_airflow` | Main airflow path through an airway from intake to exhaust, with length and frictional pressure along it |
 | `simulate_airflow` | Experimental: solve the airflow from the model inputs alone (no saved results needed), with optional changes |
-| `simulate_heat` | Experimental: dry- and wet-bulb temperature and humidity after airflow changes or with extra heat and moisture sources (diesel, fire, coolers) |
+| `simulate_heat` | Experimental: dry- and wet-bulb temperature and humidity after airflow changes or with extra heat and moisture sources (diesel, fire, coolers); `rock_temp` adds the change of rock-to-air heat with airflow and air temperature |
+| `hvac_layout` | Read-only: rooms and doors of an HVAC model and the room each door opens into (airflow in HVAC models is not solved) |
 | `contaminant_spread` | Experimental: steady-state gas / smoke concentration downstream of release points |
 | `escape_routes` | Walking distance from every airway to the surface and to the nearest refuge (Ventsim's own rule), optionally with airways blocked |
 | `recirculation_check` | Closed loops in the airflow (fan recirculation and other circulating air) |
@@ -47,10 +48,16 @@ Ventsim.
 | `write_results` | Experimental: write a **copy** with this server's airflow and temperatures in it |
 | `render_network` | Draw the network to SVG (plan or section), coloured by any field, fans marked, paths highlighted |
 | `export_csv` | Airways to CSV, any columns |
-| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows), parallel airways (Pathways), or an airway closed |
+| `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows), parallel airways (Pathways), an airway closed, or a fixed airflow (`Fixed Flow`: m3/s, or `off`) |
 | `add_airways` | Experimental: write a **copy** with new airways (copied from an existing one, joined to the network where the ends meet) |
 | `model_check` | Ventsim warnings and errors found from the file: loose ends, duplicates, blocked fans, fans or stoppings in series, conflicting fixed flows |
 | `optimize_fans_tool` | Experimental: search fan speeds for the lowest estimated fan power that keeps named airways at their required airflow and creates no new velocity violations (`min_flow`, or `strict`) |
+| `shortest_path` | Experimental: shortest route between two airways by distance, resistance or hops (Ventsim's Shortest Path) |
+| `sensitivity` | Experimental: Monte Carlo on resistances; mean, deviation and confidence of each airway's flow (Ventsim's Sensitivity) |
+| `goal_seek` | Experimental: fan speed that gives a target airflow in one airway (Ventsim's Goal Seek, fan speed) |
+| `radon_steady` | Experimental: steady-state radon (Bq/m3, pCi/l) from surface exhalation and point sources |
+| `fan_upgrade_npv` | Experimental: NPV and simple payback of changing a fan's power (generic DCF, not Ventsim's costing model) |
+| `export_dxf` | Experimental: airways as DXF LINEs for CAD (needs the optional `ezdxf` package) |
 | `fix_model` | Write a **copy** with the safe fixes: duplicates merged with Pathways, loose ends closed, blocked fans off |
 
 `list_airways` takes `units="imperial"` (cfm, fpm, ft, in. w.g., hp).
@@ -336,9 +343,12 @@ re-simulated in Ventsim.
 
 ## Limits
 
-- Fire dynamics, dispersion in time-dependent contaminant spread and rock heat from rock properties stay in Ventsim.
+- Fire dynamics and dispersion in time-dependent contaminant spread stay in Ventsim.
+- Rock heat: the response to airflow and air temperature (`simulate_heat` with `rock_temp`) uses standard correlations (Dittus-Boelter air film, transient rock conduction with age, floor of 1 year), not Ventsim's own rock model, and ignores wet-rock latent heat. Unchanged models are reproduced exactly. Not yet checked against a Ventsim re-run.
+- HVAC: rooms and doors are read (`hvac_layout`), but building HVAC airflow is not solved.
 - Fan curve pressure at the duty point differs from Ventsim's saved value by about 0.7 % (median); Ventsim applies a correction the file does not hold. Fan airflow is exact.
-- Building HVAC examples (HVACDemo, A, B) are not supported: their ducts connect through room objects the airway table does not hold.
+- Building HVAC examples (HVACDemo, A, B) are not solved: their ducts connect through room objects the airway table does not hold (`hvac_layout` reads them).
+- Fixed flows are read from the Branch Flags bit (16 or 4) with QuantityFix. Older files without Branch Flags fall back to matching QuantityFix to the saved flow. Some airways carry a QuantityFix equal to their saved flow without the bit; they now follow the solver (fixed in this version: the Tutorial2 surface fan was frozen at its saved flow).
 - Tested on the 20 example models shipped with Ventsim DESIGN 6 (up to 6,700 airways). Other versions untested.
 
 ## Contributing

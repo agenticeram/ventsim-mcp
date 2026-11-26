@@ -317,3 +317,37 @@ def stage_name(model: Model, k: int | None) -> str:
         if r and r[0] == str(k) and len(r) > 1:
             return r[1]
     return str(k)
+
+
+def _section_lines(model: Model, name: str) -> list[str]:
+    """Raw lines between the 'NAME' marker and 'END\tNAME' (empty if absent)."""
+    lines = model.lines
+    try:
+        a = lines.index(name)
+    except ValueError:
+        return []
+    try:
+        b = lines.index(f"END\t{name}", a)
+    except ValueError:
+        b = len(lines)
+    return lines[a + 1:b]
+
+
+def hvac_layout(model: Model) -> dict:
+    """Raw HVAC layout from the file's ROOMS and DOORS sections. Room rows are identified by
+    their id (second field); a door's field 5 is the id of the room it opens into, which is
+    checked against the rooms. Field meanings beyond these links are not confirmed against
+    Ventsim, so door records are returned as read."""
+    rooms = [l.split("	") for l in _section_lines(model, "ROOMS") if l.split("	")[0] == "2"]
+    room_ids = {r[1] for r in rooms if len(r) > 1}
+    doors = []
+    for l in _section_lines(model, "DOORS"):
+        f = l.split("	")
+        if len(f) < 8:
+            continue
+        doors.append({"fields": f, "room_id": f[5], "room_found": f[5] in room_ids})
+    return {"rooms": len(rooms),
+            "doors": len(doors),
+            "doors_linked_to_room": sum(d["room_found"] for d in doors),
+            "door_records": doors,
+            "note": "room and door field meanings beyond the room-id link are not verified"}

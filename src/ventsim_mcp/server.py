@@ -452,9 +452,14 @@ def simulate_heat(path: str, extra_heat_kw: dict[str, float] | None = None,
                   fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
                   airflow: str = "saved", surface_temp: float | None = None,
                   extra_latent_kw: dict[str, float] | None = None,
+                  rock_temp: float | None = None,
                   limit: int = 30) -> dict:
     """EXPERIMENTAL. Dry- and wet-bulb air temperature and relative humidity through the
     network, mixed at junctions.
+    'rock_temp' (deg C) turns on the rock-heat response: when the airflow or air temperature
+    changes, the rock-to-air heat changes with it (wall conductance from the airway's
+    velocity and the rock's conductivity and age; rock temperature from 'Rock VRT1/2' or this
+    value). Off by default; an unchanged model is unaffected.
     Heat per airway is what Ventsim saved (rock, diesel, fans, other sources) plus
     'extra_heat_kw' ({Unique No: kW}: a new diesel fleet, a fire, a cooler as a negative
     value); auto-compression follows the air. With resistance_scale / fans_off / fan_speed
@@ -481,8 +486,11 @@ def simulate_heat(path: str, extra_heat_kw: dict[str, float] | None = None,
         if r is not None and old > 0 and str(u) not in {str(x) for x in fans_off or []}:
             extra[str(u)] = extra.get(str(u), 0.0) + m.num(r, "Fan Power") * ((float(pct) / old) ** 3 - 1)
     base = thermo.temperatures(m, None, None, surface_temp)
-    t = thermo.temperatures(m, flow, extra, surface_temp,
-                            {str(k): float(v) for k, v in (extra_latent_kw or {}).items()})
+    latent = {str(k): float(v) for k, v in (extra_latent_kw or {}).items()}
+    if rock_temp is None:
+        t = thermo.temperatures(m, flow, extra, surface_temp, latent)
+    else:
+        t = thermo.temperatures_with_rock(m, flow, extra, surface_temp, latent, rock_temp)
     items, fit_e, fit_w, fit_wb = [], 0.0, 0.0, 0.0
     for u, d in t.items():
         r, b = rows[u], base[u]
@@ -602,7 +610,7 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
     edits create that Ventsim would flag (e.g. a closed airway that blocks a running fan)
     are listed after the result."""
     allowed = {"Notes", "Group", "Branch Name", "Fan Speed", "Fan Off", "Closed", "Pathways",
-               *edit.GEOMETRY_FIELDS}
+               "Fixed Flow", *edit.GEOMETRY_FIELDS}
     src, dst = _out_path(path, out_path)
     m = vsm.parse(src)  # fresh copy, not the cached one
     index = {m.value(m.row(n), "Unique No"): n for n in range(len(m.row_indexes))}
@@ -637,6 +645,25 @@ def edit_airways(path: str, out_path: str, edits: list[dict]) -> str:
                 if col in m._col and m.num(cells, col) > 0:
                     cells[m.col(col)] = f"{m.num(cells, col) * (old / v) ** 2:.9g}"
             cells[m.col("Pathways")] = str(v)
+            m.lines[m.row_indexes[n]] = "	".join(cells)
+            continue
+        if e["field"] == "Fixed Flow":
+            # airflow held at this value (m3/s) whatever the fans and resistances do; 'off'
+            # releases it. The Branch Flags bit (16) is the one the solver reads as "QuantityFix on".
+            if "Branch Flags" not in m._col or "QuantityFix" not in m._col:
+                raise ValueError("this file has no Branch Flags / QuantityFix columns")
+            flags = int(float(m.value(cells, "Branch Flags") or 0))
+            if value.strip().lower() in ("", "off", "false", "none"):
+                flags &= ~solver.QFIX_MASK
+                cells[m.col("QuantityFix")] = "0"
+            else:
+                try:
+                    q = float(value)
+                except ValueError:
+                    raise ValueError("Fixed Flow must be a number (m3/s) or 'off'") from None
+                flags |= 16
+                cells[m.col("QuantityFix")] = edit._fmt(q)
+            cells[m.col("Branch Flags")] = str(flags)
             m.lines[m.row_indexes[n]] = "	".join(cells)
             continue
         if e["field"] in edit.GEOMETRY_FIELDS:
@@ -1046,3 +1073,76 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@mcp.tool()
+def hvac_layout(path: str) -> dict:
+    """Read-only. Rooms and doors of an HVAC model (ROOMS and DOORS sections): room count,
+    and for each door the room id it opens into and whether that room exists. HVAC airflow
+    is not solved: the building ducts connect through these rooms and no simulation uses them
+    yet. Field meanings beyond the room link are not verified against Ventsim."""
+    return vsm.hvac_layout(_load(path))
+
+
+@mcp.tool()
+def shortest_path(path: str, from_unique_no: str, to_unique_no: str, weight: str = "distance") -> dict:
+    """EXPERIMENTAL. Shortest route between two airways over the network (Ventsim's Shortest
+    Path). weight: 'distance' (Length), 'resistance' (Resistance Total) or 'hops'. Returns
+    the airway Unique Nos in order with total length and resistance."""
+    from . import analysis
+    return analysis.shortest_path(_load(path), from_unique_no, to_unique_no, weight)
+
+
+@mcp.tool()
+def sensitivity(path: str, targets: list[str] | None = None, runs: int = 100,
+                spread_pct: float = 10.0) -> dict:
+    """EXPERIMENTAL. Monte Carlo sensitivity of airflow to airway resistances (Ventsim's
+    Sensitivity, resistance mode): each resistance varied by up to +/- spread_pct, the
+    network re-solved 'runs' times. Gives mean, standard deviation, deviation % and the share
+    of runs within 5 % of the mean, for each target airway (default: all)."""
+    from . import analysis
+    return analysis.sensitivity(_load(path), targets, runs, spread_pct)
+
+
+@mcp.tool()
+def goal_seek(path: str, fan_unique_no: str, target_unique_no: str, target_m3s: float,
+              speed_min: float = 20.0, speed_max: float = 200.0) -> dict:
+    """EXPERIMENTAL. Fan speed (% of curve speed) that gives target_m3s in one airway
+    (Ventsim's Goal Seek, fan speed mode), by bisection. The model is not changed: apply the
+    result with edit_airways (Fan Speed) and confirm in Ventsim."""
+    from . import analysis
+    return analysis.goal_seek(_load(path), fan_unique_no, target_unique_no, target_m3s,
+                              speed_min, speed_max)
+
+
+@mcp.tool()
+def radon_steady(path: str, surface_bq_s_m2: dict[str, float] | None = None,
+                 point_bq_s: dict[str, float] | None = None) -> dict:
+    """EXPERIMENTAL. Steady-state radon (Bq/m3 and pCi/l) in every airway from surface
+    exhalation (Bq/s/m2 per airway, over its wall area) and point sources (Bq/s per airway),
+    carried by the airflow. Progeny and dose are not modelled."""
+    from . import analysis
+    return analysis.radon_steady(_load(path), surface_bq_s_m2, point_bq_s)
+
+
+@mcp.tool()
+def fan_upgrade_npv(power_now_kw: float, power_new_kw: float, hours_per_year: float,
+                    price_per_kwh: float, capex: float, life_years: int,
+                    discount_rate: float = 0.1) -> dict:
+    """Experimental. Net present value and simple payback of changing a fan from
+    power_now_kw to power_new_kw (energy saving at price_per_kwh over life_years, discounted,
+    minus capex). A generic calculator, not Ventsim's costing model."""
+    from . import finance
+    return finance.fan_upgrade_npv(power_now_kw, power_new_kw, hours_per_year, price_per_kwh,
+                                   capex, life_years, discount_rate)
+
+
+@mcp.tool()
+def export_dxf(path: str, out_path: str) -> str:
+    """Experimental. Write the airways of the simulated stage to a DXF file (one LINE per
+    airway, end 1 to end 2, in metres) for AutoCAD or other CAD. Needs the optional ezdxf
+    package. Never overwrites the source model."""
+    from . import dxf
+    src, dst = _out_path(path, out_path)
+    n = dxf.export_airways_dxf(vsm.parse(src), dst)
+    return f"{n} airways written to {dst}"
