@@ -861,7 +861,8 @@ def write_results(path: str, out_path: str, resistance_scale: dict[str, float] |
     dry- and wet-bulb temperatures from simulate_heat. Ventsim stores airflow positive
     along each airway; an airway whose air now runs backwards is written negative and
     counted in 'reversed'. Other saved results (heat terms, gases) stay as they were;
-    re-simulate in Ventsim before relying on the copy. Never overwrites a file."""
+    re-simulate in Ventsim before relying on the copy. The changes themselves are written
+    into the inputs (resistance, Fan Off, Fan Speed). Never overwrites a file."""
     src, dst = _out_path(path, out_path)
     m = vsm.parse(src)
     rs = {str(k): float(v) for k, v in (resistance_scale or {}).items()}
@@ -875,6 +876,22 @@ def write_results(path: str, out_path: str, resistance_scale: dict[str, float] |
         raise ValueError("airflow must be 'saved' or 'simulated'")
     P = sol["P"]
     flow = {u: float(q) for u, q in zip(sol["uid"], sol["Q"])}
+    # the changes go into the inputs too, so a re-simulation in Ventsim keeps them
+    index0 = {m.value(m.row(n), "Unique No"): n for n in range(len(m.row_indexes))}
+    for u in set(rs) | off | set(sp):
+        if u not in index0:
+            raise ValueError(f"no airway with Unique No {u}")
+        n = index0[u]
+        cells = m.row(n)
+        if u in rs:
+            for col in ("Resistance", "Resistance Total"):
+                if col in m._col and m.num(cells, col) > 0:
+                    cells[m.col(col)] = f"{m.num(cells, col) * rs[u]:.9g}"
+        if u in off and "Fan Off" in m._col:
+            cells[m.col("Fan Off")] = "True"
+        if u in sp and "Fan Speed" in m._col:
+            cells[m.col("Fan Speed")] = f"{sp[u]:g}"
+        m.lines[m.row_indexes[n]] = "	".join(cells)
     heat_run = any(m.num(r, "Calc Sensible") for r in m.rows())
     temps = thermo.temperatures(m, flow) if with_heat and heat_run else {}
     index = {m.value(m.row(n), "Unique No"): n for n in range(len(m.row_indexes))}

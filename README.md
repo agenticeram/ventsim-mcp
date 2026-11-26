@@ -227,8 +227,11 @@ does not mark, so read those as "air goes round here", not as Ventsim's recircul
 - `write_results` writes airflow, end pressures, airway pressure drop, fan pressure and
   temperatures into a copy (what_if solver by default). The other tools read such a copy
   consistently: `what_if` on a written copy reproduces it with 0.00 % error on Fire and
-  CoalMine. Heat terms and gases are left as they were; the copies have not been opened in
-  Ventsim itself yet.
+  CoalMine. The changes themselves (resistance factor, Fan Off, Fan Speed) go into the
+  inputs too, so re-simulating the copy keeps them. Heat terms and gases are left as they
+  were. Copies from `write_results`, `edit_airways` (geometry, Closed) and `add_airways`
+  open in Ventsim 6.0.5 without errors (a new airway shows in the airway count); they have
+  not been re-simulated in Ventsim, which needs a simulation licence.
 - `compliance_check` takes the wet bulb Ventsim saved.
 - Stages: `simulate_airflow(stage=...)` solves another stage from its inputs and
   `escape_routes(stage=...)` checks its escape routes; the other tools use the saved

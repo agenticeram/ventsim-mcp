@@ -3,7 +3,7 @@ import gzip
 
 import pytest
 
-from ventsim_mcp import server, vsm
+from ventsim_mcp import server, solver, vsm
 
 COLS = ["MAIN", "Unique No", "Warning Key", "GUID", "Branch Name", "Entry Node", "Exit Node",
         "Notes", "Group", "X1", "Y1", "Z1", "X2", "Y2", "Z2", "Width", "Height", "Area",
@@ -353,6 +353,10 @@ def test_calibrate_and_write_results(tmp_path):
     import ventsim_mcp.vsm as v
     g = v.parse(out)
     assert abs(g.num(g.row(0), "Quantity") - 25) < 0.05
+    # the change is in the inputs too: re-simulating the copy keeps it
+    assert g.value(g.row(0), "Fan Speed") == "50"
+    s = solver.simulate(g)
+    assert abs(abs(float(s["Q"][0])) - 25) < 0.05
     assert server.list_stages(p)["saved_results_stage"] is None
 
 
