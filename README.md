@@ -353,7 +353,7 @@ re-simulated in Ventsim.
 
 ## Contributing
 
-Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Questions and ideas go to
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Open tasks, grouped by milestone, are in [ROADMAP.md](ROADMAP.md). Questions and ideas go to
 [Discussions](https://github.com/agenticeram/ventsim-mcp/discussions).
 
 ## Development
