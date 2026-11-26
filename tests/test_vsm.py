@@ -491,3 +491,27 @@ def test_fan_power_matches_saved_fire_state():
     flows = dict(zip(s["uid"], map(float, s["Q"])))
     est = optimize._power(m, saved, saved, flows)
     assert abs(est - 54.25) / 54.25 < 0.01
+
+
+def test_compressible_matches_ventsim():
+    """Tutorial2 copy saved incompressible (one density, 1.16), then re-simulated in
+    Ventsim 6 with Compressible Airflows: the compressible solve must land within 1 %
+    on average, the incompressible one is about 4 % off. Fire (saved compressible) must
+    be reproduced as saved."""
+    import os
+    import ventsim_mcp.solver as sv
+    d = os.environ.get("VENTSIM_TEST_COPIES", r"C:\Users\by\Downloads\CLAUDEM\ventsim-test")
+    a, b = (os.path.join(d, f) for f in ("7_T2_add_fixed.vsm", "VS_7_T2_add_fixed_compressible.vsm"))
+    if not (os.path.exists(a) and os.path.exists(b)):
+        pytest.skip("Ventsim re-simulation copies not available")
+    ma, mb = vsm.parse(a), vsm.parse(b)
+    ref = {mb.value(r, "Unique No"): mb.num(r, "Quantity") for r in mb.rows()}
+
+    def err(s):
+        e = [abs(q - ref[u]) / abs(ref[u]) for u, q in zip(s["uid"], map(float, s["Q"]))
+             if u in ref and abs(ref[u]) > 1]
+        return sum(e) / len(e)
+
+    assert err(sv.simulate(ma, compressible=True)) < 0.01
+    assert err(sv.simulate(ma)) > 0.03
+    assert err(sv.solve(mb, compressible=True)) < 0.001

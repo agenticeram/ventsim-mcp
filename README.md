@@ -116,7 +116,17 @@ resistances changed (x2.26 and x1.41; 25 more differ only in the last digits). P
 flow; it reproduces 96.7 % of the airflow change Ventsim computed. This is the only such
 pair among the shipped examples, so treat it as one data point.
 
-Heat, density and fire effects are not re-evaluated after a change. Treat results as an
+`compressible=True` (what_if, simulate_airflow, optimize_fans_tool) follows Ventsim's
+Compressible Airflows setting: each airway's density comes from its absolute pressure
+(saved `p air In/out`, shifted by the solved pressure change), mass flow is balanced at the
+junctions, and resistance and fan pressure scale with density. A file saved incompressible
+(one density) gets densities from pressure, temperature and moisture; a file saved
+compressible keeps its densities, scaled with pressure. Checked against Ventsim 6.0.5: a
+Tutorial2 copy saved incompressible, re-simulated compressible in Ventsim, is predicted by
+`simulate_airflow(compressible=True)` within 0.5 % mean (1.0 % worst airway); without it
+4.2 % mean (6.9 % worst).
+
+Heat and fire effects are not re-evaluated after a change. Treat results as an
 estimate and confirm in Ventsim.
 
 ## Simulation from inputs (experimental)
@@ -124,7 +134,7 @@ estimate and confirm in Ventsim.
 `simulate_airflow` does not use any saved result: resistance (`Resistance Total`), fan
 curves at their speed and count, fixed-flow airways, fixed-pressure airways (only when
 Ventsim's flag for it is set), closed airways, ends open to surface and dead ends (read from
-Ventsim's branch flags). Air is taken as incompressible and natural ventilation is ignored,
+Ventsim's branch flags). Air is incompressible unless `compressible=True`, natural ventilation is ignored,
 unless `use_saved_heat=True` borrows both from the saved results. Compared with the airflow
 Ventsim saved (`python bench/simulate.py <folder>`):
 
@@ -289,8 +299,8 @@ the velocity limits that the saved state did not already break. Power is compute
 fan curve at the new speed (affinity laws: pressure ∝ speed², flow ∝ speed), divided by the
 saved efficiency. Limits:
 
-- Airflow is the incompressible what_if solution, so it misses the density effects that
-  Ventsim's Compressible Airflows setting includes (about 4 % on the Tutorial2 copy).
+- Airflow is the what_if solution; pass `compressible=True` for models Ventsim runs with
+  Compressible Airflows (see below).
 - The search refuses fan airways with a fixed flow, and models where the fan speed does not
   change the solved airflow at all (Tutorial2's surface fan: the flow stays 115.8 m³/s at
   50 % to 100 % speed; not explained yet).

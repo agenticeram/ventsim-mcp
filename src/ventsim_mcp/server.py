@@ -235,7 +235,7 @@ def compare_models(path_a: str, path_b: str, min_change: float = 0.1, limit: int
 @mcp.tool()
 def what_if(path: str, resistance_scale: dict[str, float] | None = None,
             fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
-            limit: int = 30) -> dict:
+            limit: int = 30, compressible: bool = False) -> dict:
     """EXPERIMENTAL what-if airflow estimate. Re-solves the network with the stored fan
     curves and resistances, scaling resistance of given airways (Unique No -> factor, e.g.
     {"12": 50} for a new door), switching fans off (list of Unique No) and/or changing fan
@@ -244,11 +244,14 @@ def what_if(path: str, resistance_scale: dict[str, float] | None = None,
     'baseline_fit' tells you how well the solver reproduces the flows saved by Ventsim
     (mean_rel_error = total absolute flow error / total flow). If 'reliable' is false, or
     junctions are unbalanced in the saved flows (ducting or leakage links the solver cannot
-    see), do not trust the numbers. Always confirm in Ventsim."""
+    see), do not trust the numbers. compressible=True matches Ventsim's 'Compressible
+    Airflows' setting: densities follow absolute pressure (depth), mass is conserved and
+    resistance and fan pressure scale with density. Always confirm in Ventsim."""
     m = _load(path)
-    base = solver.solve(m)
+    base = solver.solve(m, compressible=compressible)
     mod = solver.solve(m, resistance_scale or {}, set(fans_off or []),
-                       fan_speed={str(k): float(v) for k, v in (fan_speed or {}).items()})
+                       fan_speed={str(k): float(v) for k, v in (fan_speed or {}).items()},
+                       compressible=compressible)
     act = [r for r, k in zip(m.rows(), vsm.active_mask(m)) if k]
     stored = [m.num(r, "Quantity") for r in act]
     names = [m.value(r, "Branch Name") for r in act]
@@ -384,7 +387,7 @@ def trace_airflow(path: str, unique_no: str, max_steps: int = 200) -> dict:
 def simulate_airflow(path: str, resistance_scale: dict[str, float] | None = None,
                      fans_off: list[str] | None = None, fan_speed: dict[str, float] | None = None,
                      use_saved_heat: bool = False, stage: int | None = None,
-                     limit: int = 30) -> dict:
+                     limit: int = 30, compressible: bool = False) -> dict:
     """EXPERIMENTAL. Solve the airflow from the model inputs alone, without the results
     Ventsim saved: airway resistance, fan curves, fan speed and count, fixed-flow and
     fixed-pressure airways, closed airways, surface connections and dead ends. Works on a
@@ -392,12 +395,17 @@ def simulate_airflow(path: str, resistance_scale: dict[str, float] | None = None
     heat are not modelled; use_saved_heat=True takes them from the saved results instead.
     If the file has saved airflow, 'vs_saved' compares the two (error = total absolute
     airflow difference / total airflow). stage: simulate another stage (see list_stages)
-    instead of the one whose results are saved."""
+    instead of the one whose results are saved. compressible=True: densities from absolute
+    pressure (saved 'p air In/out', so the file must have been simulated once), mass
+    balance, resistance and fan pressure scaled with density, as Ventsim's 'Compressible
+    Airflows' setting; on a Ventsim example it cut the mean airflow difference from 4.2 %
+    to 0.5 %."""
     m = _load(path, stage)
     s = solver.simulate(m, resistance_scale={str(k): float(v) for k, v in (resistance_scale or {}).items()},
                         fans_off={str(u) for u in (fans_off or [])},
                         fan_speed={str(k): float(v) for k, v in (fan_speed or {}).items()},
-                        nvp_from_file=use_saved_heat, density_from_file=use_saved_heat)
+                        nvp_from_file=use_saved_heat, density_from_file=use_saved_heat,
+                        compressible=compressible)
     rows = {m.value(r, "Unique No"): r for r in m.rows()}
     items = []
     for u, q in zip(s["uid"], s["Q"]):
@@ -687,18 +695,20 @@ def _new_issues(before: dict, after: dict) -> dict:
 @mcp.tool()
 def optimize_fans_tool(path: str, fans: list[str] | None = None, min_speed: float = 50.0,
                        max_speed: float = 100.0, step: float = 5.0, limits: dict | None = None,
-                       strict: bool = False, min_flow: dict[str, float] | None = None) -> dict:
+                       strict: bool = False, min_flow: dict[str, float] | None = None,
+                       compressible: bool = False) -> dict:
     """EXPERIMENTAL. Search fan speeds (% of saved speed) for the lowest estimated fan power
     at which the named airways keep their required airflow (min_flow, m3/s; required, or
     strict=True) and no airway goes outside the velocity limits (min/max m/s, shaft limit).
     Airways already outside the limits at the saved speeds do not block a speed set unless
     strict=True.
-    Airflow uses the what_if solver (incompressible); power is scaled from the saved fan
-    power (flow x speed^2). No copy is written: use write_results with the returned speeds,
+    Airflow uses the what_if solver (compressible=True: densities follow absolute
+    pressure, as Ventsim's Compressible Airflows); power comes from the fan curve at the
+    new speed (affinity laws) and the saved efficiency. No copy is written: use write_results with the returned speeds,
     then check the copy in Ventsim."""
     m = _load(path)
     return optimize.optimize_fans(m, fans, limits, min_speed, max_speed, step, strict=strict,
-                                  min_flow=min_flow)
+                                  min_flow=min_flow, compressible=compressible)
 
 
 @mcp.tool()

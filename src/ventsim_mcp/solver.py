@@ -142,8 +142,13 @@ def _flow(dp, R, ps_fn, n, qfix=None):
 
 def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
           fans_off: set[str] | None = None, use_nvp: bool = True, iterations: int = 100, tol: float = 5e-3,
-          fan_speed: dict[str, float] | None = None):
-    """fan_speed: Unique No -> new speed in % of the curve's speed (affinity laws)."""
+          fan_speed: dict[str, float] | None = None, compressible: bool = False):
+    """fan_speed: Unique No -> new speed in % of the curve's speed (affinity laws).
+
+    compressible: like Ventsim's 'Compressible Airflows' setting. Each airway's density
+    follows its absolute pressure (deeper air is denser), mass flow is balanced at the
+    junctions, and resistance and fan pressure scale with the airway's density. Without
+    it the densities saved in the file are kept."""
     resistance_scale = resistance_scale or {}
     fan_speed = fan_speed or {}
     fans_off = fans_off or set()
@@ -266,7 +271,75 @@ def solve(model: vsm.Model, resistance_scale: dict[str, float] | None = None,
             P[i] = P[j] + drop
         else:
             P[j] = P[i] - drop
-    return _network(br, dens, P, fixed, N, iterations, tol)
+    if not compressible:
+        return _network(br, dens, P, fixed, N, iterations, tol)
+    return _compressible(model, br, dens, P, fixed, N, iterations, tol)
+
+
+def _file_density(model: vsm.Model, rows) -> float | None:
+    """The single density of a file simulated as incompressible, or None if the saved
+    densities vary (already compressible)."""
+    ds = [model.num(r, "Dry Massflow") / model.num(r, "Quantity") for r in rows
+          if abs(model.num(r, "Quantity")) > 0.1 and model.num(r, "Dry Massflow")]
+    if ds and max(ds) - min(ds) < 1e-4 * max(ds):
+        return ds[0]
+    return None
+
+
+def _compressible(model, br, dens, P0, fixed, N, iterations, tol, rounds: int = 4, dp_floor=0.0):
+    """Solve with densities from absolute pressure. Absolute pressure of an airway is the
+    saved one (Ventsim stores 'p air In'/'p air out', which include the depth) shifted by
+    the change of the solved ventilation pressures at its ends."""
+    from . import thermo
+    const = _file_density(model, [b[8] for b in br])
+    info = []
+    for b in br:
+        r = b[8]
+        pin, pout = model.num(r, "p air In"), model.num(r, "p air out") or model.num(r, "p air In")
+        T = model.num(r, "db air In") + 273.15
+        wb = model.num(r, "wb air In")
+        if pin < 5e4 or T < 200:
+            info.append(None)
+            continue
+        x = max(thermo.moisture(T - 273.15, wb, pin), 0.0) if wb else 0.0
+        q, mf = model.num(r, "Quantity"), model.num(r, "Dry Massflow")
+        saved = mf / q if q and mf and 0.3 < mf / q < 3 else None
+        # incompressible run: one density for resistance and fans, the new density from
+        # pressure, temperature and moisture; compressible run: the saved density, scaled
+        # with the change of absolute pressure (so the saved state is reproduced exactly)
+        ref = const if const is not None else saved
+        info.append((pin, pout, T, x, ref, const is None))
+    P = P0.copy()
+    out = None
+    for _ in range(rounds):
+        br2, dens2 = [], []
+        for b, d, inf in zip(br, dens, info):
+            if inf is None or inf[4] is None:
+                br2.append(b)
+                dens2.append(d)
+                continue
+            pin, pout, T, x, ref, scaled = inf
+            i, j = b[0], b[1]
+            p_sv = 0.5 * (pin + pout)
+            p = p_sv + 0.5 * ((P[i] - P0[i]) + (P[j] - P0[j]))
+            if scaled:
+                rho_dry = ref * p / p_sv
+                f = p / p_sv
+            else:
+                pv = x * p / (0.622 + x)
+                rho_dry = (p - pv) / (287.05 * T)
+                f = rho_dry * (1 + x) / ref  # moist density relative to the one in the file
+            c = b[3]
+            c2 = (lambda q, c=c, f=f: tuple(f * v for v in c(q))) if c else None
+            br2.append((b[0], b[1], b[2] * f, c2) + tuple(b[4:]))
+            dens2.append(rho_dry)
+        out = _network(br2, dens2, P0, fixed, N, iterations, tol, dp_floor)
+        if np.max(np.abs(out["P"] - P)) < 0.5:
+            P = out["P"]
+            break
+        P = out["P"]
+    out["compressible"] = True
+    return out
 
 
 
@@ -342,7 +415,7 @@ def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,
              resistance_scale: dict[str, float] | None = None, fans_off: set[str] | None = None,
              fan_speed: dict[str, float] | None = None, nvp_from_file: bool = False,
              density_from_file: bool = False, nvp: dict[str, float] | None = None,
-             density: dict[str, float] | None = None) -> dict:
+             density: dict[str, float] | None = None, compressible: bool = False) -> dict:
     """Solve the airflow from the model inputs only, without any saved results: airway
     resistance ('Resistance Total'), fan curves at their speed and count, fixed-flow and
     fixed-pressure airways, closed airways ('Resistance Type' 1) and fans switched off.
@@ -409,7 +482,10 @@ def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,
             dens.append(mf / q_s if q_s and mf and 0.3 < mf / q_s < 3 else 1.2)
     if density is not None:
         dens = [density.get(b_[5], 1.2) for b_ in br]
-    out = _network(br, dens, P, fixed, N, iterations, tol, dp_floor=1e-3)
+    if compressible:
+        out = _compressible(model, br, dens, P, fixed, N, iterations, tol, dp_floor=1e-3)
+    else:
+        out = _network(br, dens, P, fixed, N, iterations, tol, dp_floor=1e-3)
     out["open_ends"] = int(fixed.sum())
     out["dead_ends"] = sum(1 for k, d in deg.items() if d == 1 and k not in open_)
     return out
