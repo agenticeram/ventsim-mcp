@@ -1,7 +1,6 @@
 """Fan speed search: the lowest estimated fan power at which every airway stays within the
-velocity limits. Airflow comes from the what_if solver (incompressible, saved state);
-power is scaled from the fan power saved in the file (power ~ flow x speed^2 at the same
-efficiency). Both are approximations: check the chosen copy in Ventsim before relying on it.
+velocity limits. Airflow comes from the what_if solver (saved state, optionally
+compressible); power from the fan curves at the new speed and the saved efficiency. Both are approximations: check the chosen copy in Ventsim before relying on it.
 """
 from __future__ import annotations
 
@@ -83,7 +82,7 @@ def _power(model: vsm.Model, fans: dict[str, float], base: dict[str, float], flo
 def optimize_fans(model: vsm.Model, fans: list[str] | None = None, limits: dict | None = None,
                   min_speed: float = 50.0, max_speed: float = 100.0, step: float = 5.0,
                   max_evaluations: int = 400, strict: bool = False,
-                  min_flow: dict[str, float] | None = None) -> dict:
+                  min_flow: dict[str, float] | None = None, compressible: bool = False) -> dict:
     """Search the speeds of the given fans (default: all running fans). One fan: every
     speed on the grid. Several fans: each gets its own speed on the grid, up to
     max_evaluations combinations; beyond that a common speed (% of each fan's saved speed)
@@ -109,13 +108,13 @@ def optimize_fans(model: vsm.Model, fans: list[str] | None = None, limits: dict 
     grid = [min_speed + i * step for i in range(int(round((max_speed - min_speed) / step)) + 1)]
     areas = _areas_and_shaft(model)
     # guard: a fan whose speed does not change the solved airflow cannot be tuned by this search
-    lo_s = solver.solve(model, fan_speed={u: base[u] * min_speed / 100.0 for u in tune})
-    hi_s = solver.solve(model, fan_speed={u: base[u] * max_speed / 100.0 for u in tune})
+    lo_s = solver.solve(model, compressible=compressible, fan_speed={u: base[u] * min_speed / 100.0 for u in tune})
+    hi_s = solver.solve(model, compressible=compressible, fan_speed={u: base[u] * max_speed / 100.0 for u in tune})
     dq = max(abs(a - b) for a, b in zip(map(float, lo_s["Q"]), map(float, hi_s["Q"])))
     if dq < 1e-3 * max(1.0, max(abs(float(q)) for q in hi_s["Q"])):
         raise ValueError("changing these fans' speed does not change the solved airflow in this "
                          "model (check for fixed flows or pressures on the fan airways)")
-    baseline = solver.solve(model)
+    baseline = solver.solve(model, compressible=compressible)
     base_flows = dict(zip(baseline["uid"], map(float, baseline["Q"])))
     base_power = _power(model, {u: base[u] for u in tune}, base, base_flows)
     # Many example models already break the velocity limits at their saved speeds. Unless
@@ -123,7 +122,7 @@ def optimize_fans(model: vsm.Model, fans: list[str] | None = None, limits: dict 
     already = {v["Unique No"] for v in _violations(model, base_flows, L, areas)}
 
     def evaluate(speeds: dict[str, float]):
-        s = solver.solve(model, fan_speed=speeds)
+        s = solver.solve(model, fan_speed=speeds, compressible=compressible)
         flows = dict(zip(s["uid"], map(float, s["Q"])))
         bad = _violations(model, flows, L, areas)
         new = [v for v in bad if v["Unique No"] not in already or strict]
@@ -157,5 +156,6 @@ def optimize_fans(model: vsm.Model, fans: list[str] | None = None, limits: dict 
             "violations_at_saved_state": len(already),
             "evaluated": len(tried), "best": best,
             "feasible_count": len(ok),
-            "note": ("Power is estimated from the saved fan power, not from the fan curves; "
-                     "airflow is incompressible. Verify the chosen speeds in Ventsim.")}
+            "compressible": compressible,
+            "note": ("Power from the fan curves (affinity laws, saved efficiency). "
+                     "Verify the chosen speeds in Ventsim.")}
