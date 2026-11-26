@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from mcp.server.fastmcp import FastMCP
 
-from . import checks, calib, design, edit, escape, render, solver, thermo, vsm
+from . import checks, optimize, calib, design, edit, escape, render, solver, thermo, vsm
 
 mcp = FastMCP("ventsim")
 
@@ -682,6 +682,23 @@ def _new_issues(before: dict, after: dict) -> dict:
         if d:
             res[k] = sorted(d, key=str)
     return res
+
+
+@mcp.tool()
+def optimize_fans_tool(path: str, fans: list[str] | None = None, min_speed: float = 50.0,
+                       max_speed: float = 100.0, step: float = 5.0, limits: dict | None = None,
+                       strict: bool = False, min_flow: dict[str, float] | None = None) -> dict:
+    """EXPERIMENTAL. Search fan speeds (% of saved speed) for the lowest estimated fan power
+    at which the named airways keep their required airflow (min_flow, m3/s; required, or
+    strict=True) and no airway goes outside the velocity limits (min/max m/s, shaft limit).
+    Airways already outside the limits at the saved speeds do not block a speed set unless
+    strict=True.
+    Airflow uses the what_if solver (incompressible); power is scaled from the saved fan
+    power (flow x speed^2). No copy is written: use write_results with the returned speeds,
+    then check the copy in Ventsim."""
+    m = _load(path)
+    return optimize.optimize_fans(m, fans, limits, min_speed, max_speed, step, strict=strict,
+                                  min_flow=min_flow)
 
 
 @mcp.tool()

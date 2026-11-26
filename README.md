@@ -50,6 +50,7 @@ Ventsim.
 | `edit_airways` | Experimental: write a **copy** with changed Notes / Group / Branch Name, fan speed or fan on/off, airway size, length or friction factor (resistance follows), parallel airways (Pathways), or an airway closed |
 | `add_airways` | Experimental: write a **copy** with new airways (copied from an existing one, joined to the network where the ends meet) |
 | `model_check` | Ventsim warnings and errors found from the file: loose ends, duplicates, blocked fans, fans or stoppings in series, conflicting fixed flows |
+| `optimize_fans_tool` | Experimental: search fan speeds for the lowest estimated fan power that keeps named airways at their required airflow and creates no new velocity violations (`min_flow`, or `strict`) |
 | `fix_model` | Write a **copy** with the safe fixes: duplicates merged with Pathways, loose ends closed, blocked fans off |
 
 `list_airways` takes `units="imperial"` (cfm, fpm, ft, in. w.g., hp).
@@ -278,6 +279,22 @@ ends) and RealMine (stoppings in series). Loose ends that carried air in the sav
 are not reported: Ventsim treated those as open. Warnings that need a simulation (stalled
 or reversed fans, recirculation, density, heat) come from `fan_duty_check` and
 `recirculation_check`.
+
+## Fan speed search (experimental)
+
+`optimize_fans_tool` tries fan speeds on a grid (one fan: every step; several: each fan on
+the grid if the grid is small, else a common speed factor). A speed set is feasible when the
+named airways keep their required airflow (`min_flow`, m³/s) and no airway is pushed outside
+the velocity limits that the saved state did not already break. Power is estimated as saved
+fan power x flow ratio x speed ratio²; it is not read from the fan curves. Limits:
+
+- Airflow is the incompressible what_if solution, so it misses the density effects that
+  Ventsim's Compressible Airflows setting includes (about 4 % on the Tutorial2 copy).
+- The search refuses fan airways with a fixed flow, and models where the fan speed does not
+  change the solved airflow at all (Tutorial2's surface fan: the flow stays 115.8 m³/s at
+  50 % to 100 % speed; not explained yet).
+- Without `min_flow` or `strict` it refuses to run: the lowest speed would always win.
+- Not checked in Ventsim yet.
 
 ## Checked in Ventsim
 

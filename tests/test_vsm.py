@@ -464,3 +464,13 @@ def test_add_airways_refuses_duplicate(tmp_path):
     with pytest.raises(ValueError, match="duplicate"):
         server.add_airways(str(p), str(out), [{"like": "2", "start": [1, 0, 0], "end": [2, 0, 0]}])
     assert not out.exists()
+
+
+def test_optimize_fans_meets_required_airflow(tmp_path):
+    """Fan loop: at speed s the airflow Q solves 0.2 Q^2 = 1000 s^2 - 10 s Q. For 39 m3/s
+    the lowest grid speed that delivers it is 80 %."""
+    p = _fan_loop(tmp_path)
+    r = server.optimize_fans_tool(p, ["1"], 50, 100, 5, min_flow={"2": 39.0})
+    assert r["best"] is not None and r["best"]["speeds_pct"] == {"1": 80.0}
+    with pytest.raises(ValueError, match="min_flow"):
+        server.optimize_fans_tool(p, ["1"], 50, 100, 5)
