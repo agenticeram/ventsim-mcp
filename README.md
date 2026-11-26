@@ -294,7 +294,11 @@ fan power x flow ratio x speed ratio²; it is not read from the fan curves. Limi
   change the solved airflow at all (Tutorial2's surface fan: the flow stays 115.8 m³/s at
   50 % to 100 % speed; not explained yet).
 - Without `min_flow` or `strict` it refuses to run: the lowest speed would always win.
-- Not checked in Ventsim yet.
+- Checked in Ventsim 6.0.5 on Fire with fan 6 at 75 % (the search's choice): airflow
+  within 0.32 % of our prediction (sum of absolute differences / total, 27 airways shown,
+  58 nolu kol 8.32 vs 8.27 m³/s). Ventsim's fan power for fan 6 is 13.98 kW against 17.23 kW
+  saved; the estimate gave 12.8 kW, so it over-states the saving (4.4 kW estimated, 3.3 kW in
+  Ventsim). Treat the power figure as a ranking, not a number to report.
 
 ## Checked in Ventsim
 
