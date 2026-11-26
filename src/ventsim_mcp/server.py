@@ -973,10 +973,9 @@ def write_results(path: str, out_path: str, resistance_scale: dict[str, float] |
             raise ValueError(f"no airway with Unique No {u}")
         n = index0[u]
         cells = m.row(n)
-        if u in rs:
-            for col in ("Resistance", "Resistance Total"):
-                if col in m._col and m.num(cells, col) > 0:
-                    cells[m.col(col)] = f"{m.num(cells, col) * rs[u]:.9g}"
+        if u in rs and m.num(cells, "Resistance Total") > 0:
+            # as a custom resistance: Ventsim recomputes AUTO resistances from geometry
+            edit.set_custom_resistance(m, cells, m.num(cells, "Resistance Total") * rs[u])
         if u in off and "Fan Off" in m._col:
             cells[m.col("Fan Off")] = "True"
         if u in sp and "Fan Speed" in m._col:

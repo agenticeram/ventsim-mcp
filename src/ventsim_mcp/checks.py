@@ -163,13 +163,18 @@ def check(model: vsm.Model, limit: int = 50) -> dict:
     for group in by_pair.values():
         if len(group) < 2:
             continue
-        auto = not any(_fan_running(model, rows[i]) or _fix(model, rows[i]) is not None
-                       or model.value(rows[i], "Resistance Type") in closed for i in group)
+        rts = [model.num(rows[i], "Resistance Total") for i in group]
+        # Ventsim stores a twin as Pathways on one airway (resistance / n^2), which only
+        # stands for identical airways
+        same = min(rts) > 0 and max(rts) - min(rts) <= 0.01 * max(rts)
+        auto = same and not any(_fan_running(model, rows[i]) or _fix(model, rows[i]) is not None
+                                or model.value(rows[i], "Resistance Type") in closed for i in group)
         issues["duplicate"].append({
             "Unique No": [uid[i] for i in group], "Branch Name": [name[i] for i in group],
             "reversed": [ends[i] != ends[group[0]] for i in group],
             "fix": ("merge into one airway with Pathways = number of airways (automatic)" if auto
-                    else "has a fan, fixed flow or stopping: merge or delete by hand")})
+                    else "different airways, or one has a fan, fixed flow or stopping: "
+                         "merge or delete by hand")})
 
     # zero length: both ends at the same junction
     for i, (a, b) in enumerate(ends):
@@ -273,15 +278,14 @@ def fix(model: vsm.Model, kinds: set[str]) -> dict:
                 continue
             ids = it["Unique No"]
             rs = [model.row(index[u]) for u in ids]
-            inv = sum(1 / math.sqrt(max(model.num(r, "Resistance Total"), 1e-12)) for r in rs)
-            r_eq = 1 / inv ** 2
             n0 = index[ids[0]]
             cells = model.row(n0)
-            ratio = r_eq / max(model.num(cells, "Resistance Total"), 1e-12)
+            p0 = max(int(model.num(cells, "Pathways", 1)), 1)
+            paths = sum(max(int(model.num(r, "Pathways", 1)), 1) for r in rs)
+            ratio = (p0 / paths) ** 2  # identical airways in parallel: R / n^2
             for col in ("Resistance", "Resistance Total"):
                 if col in model._col and model.num(cells, col) > 0:
                     cells[model.col(col)] = f"{model.num(cells, col) * ratio:.9g}"
-            paths = sum(max(int(model.num(r, "Pathways", 1)), 1) for r in rs)
             if "Pathways" in model._col:
                 cells[model.col("Pathways")] = str(paths)
             put(n0, cells)

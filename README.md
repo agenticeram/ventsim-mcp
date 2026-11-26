@@ -247,7 +247,9 @@ the network solve; nothing else is needed for them.
 `edit_airways` accepts `Width`, `Height`, `Length` and `kFactor`. Area and perimeter follow
 the airway shape (rectangle, round; other profiles are scaled) and `Resistance Total` is
 scaled with the Atkinson relation `R ~ k * P * L / A^3`, so shock and density factors Ventsim
-folded into it are kept in proportion. `add_airways` copies an existing airway to new end
+folded into it are kept in proportion. A new friction factor is stored as a custom value and
+a new length as a custom resistance, because Ventsim recomputes AUTO resistances from the
+end coordinates and the friction preset (see "Checked in Ventsim"). `add_airways` copies an existing airway to new end
 points; it does not copy fans, fixed flows or pressures, heat or gas sources. A new end
 joins the network where it meets an existing airway end (not at a surface connection,
 which it would close); an end that meets nothing is a dead end unless listed in
@@ -279,22 +281,27 @@ or reversed fans, recirculation, density, heat) come from `fan_duty_check` and
 
 ## Checked in Ventsim
 
-Copies written by this server, re-simulated in Ventsim DESIGN 6.0.5 (airflow) and compared
-airway by airway (sum of absolute differences / total airflow):
+Copies written by this server were opened and re-simulated (airflow) in Ventsim DESIGN
+6.0.5. What that showed about writing inputs Ventsim keeps:
 
-| Copy | Change | Prediction vs Ventsim |
-|---|---|---|
-| Tutorial2 (`write_results`) | two resistances x3 and x0.5 | 0.04 % (`what_if`) |
-| Tutorial2 (`edit_airways`) | a length and a width changed | 0.20 % (`simulate_airflow`) |
-| Tutorial2 (`edit_airways`) | intake closed | both: no airflow anywhere |
-| Fire (`write_results`) | fan at 90 % | 9.5 % (`what_if`) |
+- Ventsim recomputes an AUTO resistance (resistance type 0) from airway size, friction
+  preset and the length between the end coordinates every time it simulates. A resistance
+  factor written into such an airway was dropped, and so was a length that differs from the
+  coordinates. Resistance changes (`write_results`) and length changes (`edit_airways`) are
+  now written as a custom resistance (type -1), and friction factors as a custom value
+  (kFactor type -1), which Ventsim keeps. Width and height are kept as written.
+- Closing the intake of Tutorial2 stops all airflow in Ventsim as here, and Ventsim
+  reports "operating fan blocked" (now found by `model_check`).
+- Ventsim puts fans whose airway equation uses total pressure on the curve's
+  total-pressure column; `what_if` now does the same instead of scaling the static curve
+  (Fire, fan at 90 %: 10.7 % -> 9.5 % of total airflow). The remaining Fire gap is not
+  isolated yet: that copy also carried temperatures written by `write_results`, which
+  Ventsim uses for density and natural ventilation while `what_if` keeps those frozen.
+- Ventsim re-simulating Fire unchanged reproduces its saved file within 0.28 %.
 
-Ventsim re-simulating Fire unchanged reproduces its saved file within 0.28 %, so the Fire
-gap comes from the change: with the fan at 90 % Ventsim also recomputes the fire and rock
-heat (inlet temperatures drop by up to 3 K) and with them the natural ventilation, which
-`what_if` keeps frozen. This comparison also showed that Ventsim puts fans whose airway
-equation uses total pressure on the curve's total-pressure column; `what_if` now does the
-same (it scaled the static curve before, 10.7 %).
+Copies with the persistent inputs (custom resistance, friction factor, length, Pathways,
+merged duplicates, fan speed, Fire without written temperatures) are prepared but not yet
+re-simulated in Ventsim.
 
 ## Limits
 
