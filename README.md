@@ -285,8 +285,9 @@ or reversed fans, recirculation, density, heat) come from `fan_duty_check` and
 `optimize_fans_tool` tries fan speeds on a grid (one fan: every step; several: each fan on
 the grid if the grid is small, else a common speed factor). A speed set is feasible when the
 named airways keep their required airflow (`min_flow`, m³/s) and no airway is pushed outside
-the velocity limits that the saved state did not already break. Power is estimated as saved
-fan power x flow ratio x speed ratio²; it is not read from the fan curves. Limits:
+the velocity limits that the saved state did not already break. Power is computed from the
+fan curve at the new speed (affinity laws: pressure ∝ speed², flow ∝ speed), divided by the
+saved efficiency. Limits:
 
 - Airflow is the incompressible what_if solution, so it misses the density effects that
   Ventsim's Compressible Airflows setting includes (about 4 % on the Tutorial2 copy).
@@ -294,11 +295,10 @@ fan power x flow ratio x speed ratio²; it is not read from the fan curves. Limi
   change the solved airflow at all (Tutorial2's surface fan: the flow stays 115.8 m³/s at
   50 % to 100 % speed; not explained yet).
 - Without `min_flow` or `strict` it refuses to run: the lowest speed would always win.
-- Checked in Ventsim 6.0.5 on Fire with fan 6 at 75 % (the search's choice): airflow
-  within 0.32 % of our prediction (sum of absolute differences / total, 27 airways shown,
-  58 nolu kol 8.32 vs 8.27 m³/s). Ventsim's fan power for fan 6 is 13.98 kW against 17.23 kW
-  saved; the estimate gave 12.8 kW, so it over-states the saving (4.4 kW estimated, 3.3 kW in
-  Ventsim). Treat the power figure as a ranking, not a number to report.
+- Checked in Ventsim 6.0.5 on Fire with fan 6 at 75 % (the search's choice): airflow within
+  0.32 % of our prediction (sum of absolute differences / total). Fan power per fan:
+  fan 6 13.96 kW (Ventsim 13.98), fan 745 28.12 (28.02), fan 781 9.46 (9.48). Saved state
+  (fans at 80, 75, 75 %): 54.31 kW against Ventsim's 54.25 kW.
 
 ## Checked in Ventsim
 

@@ -474,3 +474,20 @@ def test_optimize_fans_meets_required_airflow(tmp_path):
     assert r["best"] is not None and r["best"]["speeds_pct"] == {"1": 80.0}
     with pytest.raises(ValueError, match="min_flow"):
         server.optimize_fans_tool(p, ["1"], 50, 100, 5)
+
+
+def test_fan_power_matches_saved_fire_state():
+    """Fire's saved fan powers (Ventsim): fan 6 at 80 %, fans 745 and 781 at 75 %; the curve
+    estimate must agree within 1 % in total."""
+    import ventsim_mcp.solver as sv
+    from ventsim_mcp import optimize
+    import os
+    ex = os.path.join(os.environ.get("VENTSIM_EXAMPLES", r"C:\Program Files\Ventsim DESIGN 6\examples"), "Fire.vsm")
+    if not os.path.exists(ex):
+        pytest.skip("Ventsim examples not installed")
+    m = vsm.parse(ex)
+    saved = {"6": 80.0, "745": 75.0, "781": 75.0}
+    s = sv.solve(m)
+    flows = dict(zip(s["uid"], map(float, s["Q"])))
+    est = optimize._power(m, saved, saved, flows)
+    assert abs(est - 54.25) / 54.25 < 0.01

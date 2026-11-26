@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 from itertools import product
 
+import numpy as np
+
 from . import design, solver, vsm
 
 DEFAULT_LIMITS = {"min_velocity_ms": 0.25, "max_velocity_ms": 6.0, "max_velocity_shaft_ms": 20.0}
@@ -51,17 +53,30 @@ def _has_fixed_flow(model: vsm.Model, uid: str) -> bool:
 
 
 def _power(model: vsm.Model, fans: dict[str, float], base: dict[str, float], flows: dict[str, float]) -> float:
-    """Estimated shaft power (kW) of the tuned fans: saved power x flow ratio x speed ratio^2."""
+    """Shaft power (kW) of the tuned fans from their curves: at speed s the fan gives
+    s^2 x P_curve(Q/s) (affinity laws), and power = Q x P / efficiency. The efficiency is the
+    saved Pressure Eff of the fan, held constant over the speed change. Checked against
+    Ventsim 6.0.5 on Fire (fan 4 curve, 100 % and 75 %)."""
+    lib = design.fan_library(model)
     total = 0.0
     for r in model.rows():
         uid = model.value(r, "Unique No")
-        if uid not in fans or model.value(r, "Fan Type") in ("", "0"):
+        ft = model.value(r, "Fan Type")
+        if uid not in fans or ft in ("", "0") or ft not in lib:
             continue
-        p0 = model.num(r, "Fan Power")
-        q0 = abs(model.num(r, "Quantity")) or 1e-9
-        q = abs(flows.get(uid, q0))
-        s0 = max(base[uid], 1e-6)
-        total += p0 * (q / q0) * (fans[uid] / s0) ** 2
+        pts = sorted(lib[ft]["points"])
+        qs = [p[0] for p in pts]
+        col = 2 if any(p[2] > 0 for p in pts) else 1
+        ps = [p[col] for p in pts]
+        eff = model.num(r, "Pressure Eff") / 100.0
+        if eff <= 0:
+            eff = 0.65  # Ventsim's usual value when the file leaves it blank
+        n = max(model.num(r, "Fan Numbers", 1.0), 1.0)
+        q = abs(flows.get(uid, model.num(r, "Quantity"))) / n
+        s = max(fans[uid] / 100.0, 1e-6)
+        x = min(max(q / s, qs[0]), qs[-1])
+        p_tot = s * s * float(np.interp(x, qs, ps))
+        total += n * q * p_tot / eff / 1000.0
     return total
 
 
