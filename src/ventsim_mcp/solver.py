@@ -328,7 +328,8 @@ QFIX_MASK = (1 << 2) | (1 << 4)  # Branch Flags bits that switch a QuantityFix o
 def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,
              resistance_scale: dict[str, float] | None = None, fans_off: set[str] | None = None,
              fan_speed: dict[str, float] | None = None, nvp_from_file: bool = False,
-             density_from_file: bool = False) -> dict:
+             density_from_file: bool = False, nvp: dict[str, float] | None = None,
+             density: dict[str, float] | None = None) -> dict:
     """Solve the airflow from the model inputs only, without any saved results: airway
     resistance ('Resistance Total'), fan curves at their speed and count, fixed-flow and
     fixed-pressure airways, closed airways ('Resistance Type' 1) and fans switched off.
@@ -378,8 +379,10 @@ def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,
         qfix = qf if qf and (QFIX_MASK is None or flags & QFIX_MASK) else None
         if model.value(r, "Resistance Type") == "1" and uid not in resistance_scale:
             qfix = 0.0
-        nvp = model.num(r, "Calc NVP Pressure") if nvp_from_file else 0.0
-        br.append((a, b, R, curve, n, uid, a, b, r, qfix, nvp))
+        nv = model.num(r, "Calc NVP Pressure") if nvp_from_file else 0.0
+        if nvp is not None:
+            nv = nvp.get(uid, 0.0)
+        br.append((a, b, R, curve, n, uid, a, b, r, qfix, nv))
     N = (max(max(e) for e in ends) + 1) if ends else 0
     P = np.zeros(N)
     fixed = np.zeros(N, bool)
@@ -391,6 +394,8 @@ def simulate(model: vsm.Model, iterations: int = 200, tol: float = 5e-3,
         for b_ in br:
             q_s, mf = model.num(b_[8], "Quantity"), model.num(b_[8], "Dry Massflow")
             dens.append(mf / q_s if q_s and mf and 0.3 < mf / q_s < 3 else 1.2)
+    if density is not None:
+        dens = [density.get(b_[5], 1.2) for b_ in br]
     out = _network(br, dens, P, fixed, N, iterations, tol, dp_floor=1e-3)
     out["open_ends"] = int(fixed.sum())
     out["dead_ends"] = sum(1 for k, d in deg.items() if d == 1 and k not in open_)
