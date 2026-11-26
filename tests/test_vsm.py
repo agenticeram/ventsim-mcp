@@ -444,3 +444,23 @@ def test_closing_fan_path_is_reported_and_fixed(tmp_path):
     fixed = str(tmp_path / "closed_fixed.vsm")
     r = server.fix_model(out, fixed)
     assert r["changed"] == {"fan_off": ["1"]} and r["after"] == {}
+
+
+def test_add_airways_refuses_duplicate(tmp_path):
+    """Portal -> 1 -> 2 -> portal; a second airway between the interior junctions 1 and 2
+    would be a duplicate in Ventsim."""
+    lines = ["4.0\tT\t1 6.0.0.0", "\t".join(COLS)]
+    for i, (a, b) in enumerate([(0, 1), (1, 2), (2, 3)], 1):
+        d = dict.fromkeys(COLS, "")
+        d.update({"MAIN": str(i), "Unique No": str(i), "X1": str(a), "Y1": "0", "Z1": "0",
+                  "X2": str(b), "Y2": "0", "Z2": "0", "Quantity": "10", "Area": "10",
+                  "Width": "3", "Height": "3.3", "Perimeter": "12.6", "kFactor": "0.01",
+                  "Length": "1", "Resistance Total": "0.1", "Fan Type": "0"})
+        lines.append("\t".join(d[c] for c in COLS))
+    lines += ["ENDFILE"]
+    p = tmp_path / "line.vsm"
+    p.write_bytes(gzip.compress("\r\n".join(lines).encode("latin-1")))
+    out = tmp_path / "dup.vsm"
+    with pytest.raises(ValueError, match="duplicate"):
+        server.add_airways(str(p), str(out), [{"like": "2", "start": [1, 0, 0], "end": [2, 0, 0]}])
+    assert not out.exists()
